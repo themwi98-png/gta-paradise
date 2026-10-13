@@ -39,7 +39,7 @@ copies of both games, and are never uploaded here.
 
 ## What you'll need
 
-- **GTA V Legacy** (PC). The Enhanced edition and GTA Online are never touched;
+- **GTA V Legacy** (PC). The Enhanced edition is not touched;
   story mode only.
 - **Burnout Paradise Remastered** (PC).
 - [ScriptHookV](http://www.dev-c.com/gtav/scripthookv/) for the GTA build you
@@ -56,7 +56,7 @@ copies of both games, and are never uploaded here.
    **Run anyway**.)
 3. The setup finds your games and CodeWalker, or lets you pick their folders.
    Press **Install**: the first install converts the whole city (about
-   15–20 minutes, 10 GB free disk space). Updates only redo what changed.
+   10–20 minutes, 10 GB free disk space). Updates only redo what changed.
 4. Start GTA V and load story mode.
 
 ## Project layout
