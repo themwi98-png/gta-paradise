@@ -37,6 +37,7 @@ cp target/dist/release/paradise_asi.dll "$DIST/mod/paradise.asi"
 cp -r tools/collision tools/edits "$DIST/data/tools/"
 cp tools/props_map.csv tools/paradise.ini tools/base_map_disable.txt tools/base_map_packs.txt "$DIST/data/tools/"
 cp docs/PLAYER_README.txt "$DIST/README.txt"
+cp LICENSE "$DIST/LICENSE.txt"
 echo "$VERSION" > "$DIST/version.txt"
 
 # Nothing personal inside: no Windows user name in any file.

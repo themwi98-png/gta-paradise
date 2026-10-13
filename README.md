@@ -19,9 +19,6 @@ traffic, pedestrians and police live in it, with Burnout-style driving on top.
 The full list, with what's confirmed working, is in
 [docs/FEATURES.md](docs/FEATURES.md).
 
-> **Work in progress.** There is no installer yet. The mod is currently built
-> and installed with the scripts in `tools/` on the developer's own PC.
-
 ## No game files included
 
 This repository contains only the mod's own code and hand-made edits. The map,
@@ -38,11 +35,17 @@ copies of both games, and are never uploaded here.
 - [OpenIV](https://openiv.com/) with its `mods` folder set up (OpenIV.asi).
 - [CodeWalker](https://www.gta5-mods.com/tools/codewalker-gtav-interactive-3d-map) 3.0 (dev46 or newer), used to build the GTA files. Not included: its author hasn't released it under a licence that allows bundling it.
 
-## Building it yourself (for now)
+## Installing
 
-The tools are written in Rust and C# (.NET 8), driven by bash scripts (Git
-Bash on Windows). Step-by-step instructions for the editors and the rebuild
-scripts are in [docs/HOW_TO.md](docs/HOW_TO.md).
+1. Install the above, and close GTA V.
+2. Download the latest `GTA-Paradise-<version>.zip` from
+   [Releases](../../releases), unzip it anywhere and run `paradise-setup.exe`.
+   (Windows may warn that the app isn't signed: click **More info**, then
+   **Run anyway**.)
+3. The setup finds your games and CodeWalker, or lets you pick their folders.
+   Press **Install**: the first install converts the whole city (about
+   15–20 minutes, 10 GB free disk space). Updates only redo what changed.
+4. Start GTA V and load story mode.
 
 ## Project layout
 
@@ -56,7 +59,14 @@ scripts are in [docs/HOW_TO.md](docs/HOW_TO.md).
 | `tools/edits` | Hand edits made in the viewer (collision, water, traffic, spawn zones) |
 | `tools/*.sh` | Build, rebuild and install scripts |
 | `third_party/rerecast` | Navmesh library (MIT / Apache-2.0), lightly patched |
-| `docs` | Feature list and how-to |
+| `crates/paradise-setup` | The installer (setup window and console version) |
+| `docs` | Feature list, how-to for the editors and scripts |
+
+## License
+
+The mod's own code and data are under the [MIT License](LICENSE). That covers
+this project only: it gives no rights to Burnout Paradise, GTA V or any of
+their content. `third_party/rerecast` keeps its own licence (MIT / Apache-2.0).
 
 ## Disclaimer
 
