@@ -37,6 +37,7 @@ The full list, with what's confirmed working, is in
   wasn't made for.
 - **Out-of-bounds collision is rough.** Expect some glitches off the main
   roads (see the first feature above).
+- **Various visual glitches** Power lines are white for some reason, some road textures don't render properly
 
 ## No game files included
 
