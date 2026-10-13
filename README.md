@@ -30,8 +30,9 @@ The full list, with what's confirmed working, is in
 - **Low-detail (LOD) models are missing.** Buildings and scenery only have
   their full-detail models, so far-away parts of the city don't show until
   you get closer.
-- **Police sometimes bug out while following you**, for example bunching
-  up or taking wrong turns, especially off the main roads.
+- **Police sometimes bug out while following you**, likely because of the
+  mod's higher car speeds and weaker cars, which GTA's police driving
+  wasn't made for.
 - **Out-of-bounds collision is rough.** Expect some glitches off the main
   roads (see the first feature above).
 
