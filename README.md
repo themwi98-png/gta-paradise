@@ -21,6 +21,8 @@ The full list, with what's confirmed working, is in
 
 ## Known issues
 
+- **Some tunnels are blocked or flooded.** Glitched collision blocks the way
+  through some tunnels, and one tunnel is flooded with water.
 - **The minimap and GPS still show Los Santos.** The pause-menu map, minimap
   and route guidance haven't been replaced yet.
 - **Burnout's low-detail backdrop hills are missing**, so the distant
