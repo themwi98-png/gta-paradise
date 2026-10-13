@@ -4,42 +4,27 @@ Burnout Paradise City (from Burnout Paradise Remastered) replaces Los Santos in
 GTA V **Legacy** story mode, with GTA's traffic, pedestrians and police living in
 it and Burnout-style driving on top.
 
-**Status key:** ✅ confirmed working in game · 🟡 installed, not yet confirmed in
-game · ⬜ not done yet / idea
+**Status key:** ✅ confirmed working in game · 🟡 needs further testing · ⬜ not done yet / idea
 
 Last updated: 2026-10-12
 
----
-
-## Ground rules
-
-- Only the **Legacy** install (`Grand Theft Auto V`, GTA 1.0.3889) is modded,
-  through the OpenIV `mods` folder. **GTA V Enhanced (used for Online) is never
-  touched.** Story mode only.
-- The original `update/update.rpf` is untouched (backup: `update.rpf.bpbackup`);
-  everything goes in `mods/update/update.rpf` and `mods/update/x64/dlcpacks/`.
-- GTA must be closed to install (the install script refuses while it runs).
-- `@mode off` in `paradise.ini` gives back normal GTA.
-
----
 
 ## The map
 
 | Feature | Status | Notes |
 |---|---|---|
 | Paradise City buildings, roads and scenery (models + textures) | ✅ | Every Burnout map section converted to GTA models and map files (`bpx gta-visual`). |
-| Collision (drive / walk on everything) | ✅ | Burnout's own collision (the player's `WORLDCOL.BIN`) plus about 441,000 added out-of-bounds pieces, kept separately in `tools/collision/paradise_extra.pcx` (only the added pieces, so no Burnout data is shared), repaired for GTA. `bpx col-split` makes the `.pcx` from a combined collision file. |
-| Hand-made collision fixes | ✅ | 654 pieces deleted with the viewer's collision editor (`tools/edits/collision_edits.json`). |
+| Collision (drive / walk on everything) | 🟡 | Burnout's own collision (the player's `WORLDCOL.BIN`) plus about 441,000 added out-of-bounds pieces, kept separately in `tools/collision/paradise_extra.pcx` (only the added pieces, so no Burnout data is shared), repaired for GTA. `bpx col-split` makes the `.pcx` from a combined collision file. |
 | Los Santos removed | ✅ | Base map, Rockstar's patch packs, scenario points and stray grass all removed. |
 | Map height | ✅ | Placed with `--offset 0,0,9.9` so Paradise's sea sits at GTA's sea level. |
-| Sea | ✅ | Sea level tuned by eye; covers the whole world, no gaps; calm water near shore, no waves through streets. |
-| Lakes (incl. Silver Lake) and river | ✅ | Raised lake levels from Burnout's water meshes / water collision; shoreline follows curves. |
-| Hand-made water fixes | ✅ | 656 flooded 16 m squares removed with the viewer's water editor (`tools/edits/water_edits.json`). |
+| Sea | 🟡 | Sea level tuned by eye; covers the whole world, no gaps; calm water near shore, no waves through streets. |
+| Lakes (incl. Silver Lake) and river | 🟡 | Raised lake levels from Burnout's water meshes / water collision; shoreline follows curves. |
+| Water fixes | ✅ | 656 flooded 16 m squares removed with the viewer's water editor (`tools/edits/water_edits.json`). |
 | Street props | ✅ | 16,120 of Burnout's 27,512 props replaced by similar GTA props: lamp posts, traffic lights, rail crossing signals, roadworks barriers, cones, water barrels, bins, dumpsters, benches, phones, newspaper boxes, mailboxes, parking meters, picnic tables, drums, crates, stop / yield / no-entry signs. Same spots and facing, set on the ground. Table: `tools/props_map.csv`. |
-| Breakable barriers instead of fixed ones | 🟡 | All roadworks / stunt barriers now use the better-looking breakable `prop_barrier_work06a` (marks 14/15). |
-| Movable boxes instead of fixed ones | 🟡 | Big crates and box pallets now use the movable `prop_box_wood01a` (marks 10/11/16). |
-| Barrels sitting on the ground | 🟡 | GTA models centred on their middle (barrels) are lifted so they no longer sink halfway (mark 12). |
-| Swinging stunt gates removed | 🟡 | Burnout's stunt gates (`STU_gate01`) are left out entirely: in Burnout they break once and stay gone, so in a normal playthrough they're usually missing anyway. |
+| Breakable barriers instead of fixed ones | ✅ | All roadworks / stunt barriers now use the better-looking breakable `prop_barrier_work06a` (marks 14/15). |
+| Movable boxes instead of fixed ones | ✅ | Big crates and box pallets now use the movable `prop_box_wood01a` (marks 10/11/16). |
+| Barrels sitting on the ground | ✅ | GTA models centred on their middle (barrels) are lifted so they no longer sink halfway (mark 12). |
+| Swinging stunt gates removed | ✅ | Burnout's stunt gates (`STU_gate01`) are left out entirely: in Burnout they break once and stay gone, so in a normal playthrough they're usually missing anyway. |
 | Railings, overhead lane-sign gantries, warning chevrons | ⬜ | No close GTA match picked yet (railings are the biggest gap: 2,860). |
 | District name signs, billboards | ⬜ | Paradise-specific; no GTA equivalent. |
 | Minimap / pause map showing Paradise City | ⬜ | Still shows Los Santos art (GPS routes use Paradise roads). Idea: render a top-down Paradise map into GTA's radar. On hold. |
@@ -51,21 +36,21 @@ Last updated: 2026-10-12
 | Feature | Status | Notes |
 |---|---|---|
 | Traffic | ✅ | GTA cars drive Burnout's road network, converted to two-way GTA roads (every road reachable from every other). |
-| Hand-made traffic fixes | ✅ (tool) | Viewer traffic editor (reverse / delete / shift lanes, set speed, connect, draw new lanes, edit parked cars). No edits made yet. |
+| Manual traffic fixes | ✅ (tool) | Viewer traffic editor (reverse / delete / shift lanes, set speed, connect, draw new lanes, edit parked cars). No edits made yet. |
 | Intersections marked for the AI | ✅ | Junction and dead-end markers like Rockstar's, so AI turns and yields properly. |
 | Parked cars | ✅ | Burnout's 952 parked cars as GTA parked-car spawners, on the ground. |
 | Pedestrians | ✅ | Walkable navmesh generated for the whole city (pavements, plazas, island). |
 | Districts / police type | ✅ | Burnout's districts (hand-aligned) as GTA zones: LSPD everywhere, peds on the island. |
 | Los Santos leftover spawns removed | 🟡 | NPCs and vehicles that appear in mid-air (over 8 m up, or over nothing) are removed as they spawn, near or far (flying aircraft excepted). GTA's trains, whose tracks now run through the sky, are switched off. Logged to `paradise_spawns.csv`. |
 | No-spawn zones | 🟡 | Placed in the viewer's Spawns panel; GTA's parked-car spawners and NPC spawn spots are switched off inside, and anything else that appears there is removed. One zone so far (mark 21). |
-| Traffic lights that cycle | ⬜ | GTA may or may not drive the placed traffic-light props; Burnout has none either. |
-| Pedestrian navmesh hand-editing | ⬜ | Wanted later. |
+| Traffic lights that cycle | ⬜ | GTA may or may not drive the placed traffic-light props. |
+| Pedestrian navmesh hand-editing | 🟡 | Implemented, untested |
 
 ## Police
 
 | Feature | Status | Notes |
 |---|---|---|
-| Police chase on Paradise roads | ✅ | All of Paradise's road data kept loaded, so police dispatched from far away can route to you. |
+| Police chase on Paradise roads | 🟡 | All of Paradise's road data kept loaded, so police dispatched from far away can route to you. Needs further testing. |
 | Faster, more aggressive pursuers | ✅ | Top skill and aggression, 2× engine power, +50 % top speed (`@police_power`, `@police_top`). |
 | Police stay in their cars while you drive | ✅ | They still get out if you're on foot. |
 | Police notice you when in plain sight | ✅ | A police car within 120 m with a clear view reports you. |
@@ -78,14 +63,14 @@ Last updated: 2026-10-12
 |---|---|---|
 | Much more crash damage on all cars | ✅ | All 791 vehicles (base game + DLC): dents 6×, body damage 4×, engine damage 3× (`HANDLING` in `crates/bpx/src/gtadata.rs`). |
 | Faster cars | ✅ | Top speed 1.35×, engine power 1.5×, brakes 1.25×. |
-| More grip | 🟡 | Cornering and sliding grip 1.4× (was 1.2×), wheelspin cut to 0.6×. |
+| More grip | ✅ | Cornering and sliding grip 1.4× (was 1.2×), wheelspin cut to 0.6×. |
 | Heavier jumps | ✅ | Cars in the air fall at 3× gravity (`@air_gravity`). |
-| Downforce | 🟡 | Fast cars on the ground are pressed down harder, growing with speed squared: +1 g at ~180 km/h, at most +3 g (`@downforce`). |
+| Downforce | ✅ | Fast cars on the ground are pressed down harder, growing with speed squared: +1 g at ~180 km/h, at most +3 g (`@downforce`). |
 | Extra dents and smashed glass on hard hits | ✅ | From about 40 km/h of sudden speed loss (`@impact_speed`). |
 | **Wrecks** | ✅ | Hard crash (≈65 km/h sudden speed loss, `@wreck_speed`): car crumpled all round, glass and panels gone, explodes, 5 s slow-motion crash cam with "WRECKED", then you respawn on the nearest road in a fresh copy of the same car (colours, upgrades, plate), already rolling. No penalty. |
-| Slow motion starts just before the impact | 🟡 | Only when a wreck is all but certain: lines traced straight ahead along your path, within the car's width, must agree (2 of 3) on a near head-on hit at least 25 % over the wreck threshold within 0.12 s. Otherwise slow-mo starts at the impact. Steering clear or a non-wreck hit brings normal speed back and shows a yellow "DRIVEAWAY" for 2 s (`@precrash`, `@precrash_lead`). |
-| Wreck scene cleared | 🟡 | Once the screen fades after a wreck, NPCs, vehicles and fires within 6 m of the impact point and of where the wreck ended up are removed, and again around your new car just before the screen comes back. Vehicles and people within 10 m at the impact, or touched by the wreck as it tumbles, are removed wherever they were thrown (`@wreck_clear`; 0 = off). |
-| Wreck when the car is finished | 🟡 | On fire, engine dead, undrivable, or jammed (wheels down, accelerator held, not moving) for 2.5 s also counts as a wreck. Being upside down never does: hold steering to roll the car back over (`@wreck_damage`, `@wreck_stuck`). |
+| Slow motion starts just before the impact | ✅ | Only when a wreck is all but certain: lines traced straight ahead along your path, within the car's width, must agree (2 of 3) on a near head-on hit at least 25 % over the wreck threshold within 0.12 s. Otherwise slow-mo starts at the impact. Steering clear or a non-wreck hit brings normal speed back and shows a yellow "DRIVEAWAY" for 2 s (`@precrash`, `@precrash_lead`). |
+| Wreck scene cleared | ✅ | Once the screen fades after a wreck, NPCs, vehicles and fires within 6 m of the impact point and of where the wreck ended up are removed, and again around your new car just before the screen comes back. Vehicles and people within 10 m at the impact, or touched by the wreck as it tumbles, are removed wherever they were thrown (`@wreck_clear`; 0 = off). |
+| Wreck when the car is finished | ✅ | On fire, engine dead, undrivable, or jammed (wheels down, accelerator held, not moving) for 2.5 s also counts as a wreck. Being upside down never does: hold steering to roll the car back over (`@wreck_damage`, `@wreck_stuck`). |
 | No flying through the windscreen | ✅ | |
 | **Boost** | ✅ | Hold A (controller) / X (keyboard): exhaust flames, extra engine power and boost sound; up to ~1.8× the car's top speed (105–210 mph). Gauge bottom right, lasts 7 s. Locked when empty until you let go. |
 | Earning boost | ✅ | Driving fast, oncoming lane / wrong way, near misses (a car passing within about 2.5 m; oncoming worth more), drifts, air time and big air. |
@@ -100,7 +85,7 @@ Last updated: 2026-10-12
 | Feature | Status | Notes |
 |---|---|---|
 | Straight into Paradise on load | ✅ | Screen stays black through GTA's arrival scene (e.g. Vespucci pull-ups); you appear at `@start`. |
-| Skip the landing menu | ⬜ (setting) | Not modded: use GTA's own startup option (Steam launch options / in-game landing page setting) to go straight to Story Mode. |
+| Skip the landing menu | N/A | Not modded: use GTA's own startup option (Steam launch options / in-game landing page setting) to go straight to Story Mode. |
 | Wasted → respawn nearby | ✅ | GTA's normal "wasted" plays (with its penalties), then you appear on foot near where you died instead of a Los Santos hospital. |
 | Busted → respawn nearby | 🟡 | Same for arrests (penalties kept). |
 | Rescue from falling through the map | ✅ | 1.5 s with nothing below (not swimming / flying / boating) puts you back at `@start`. |
