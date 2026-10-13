@@ -89,7 +89,7 @@ The ones you're most likely to want:
 | `@precrash` | on | Start the slow motion just before a wreck you can't avoid |
 | `@boost_seconds` | 7 | How long a full boost gauge lasts |
 | `@boost_fill` | 1.5 | How fast the boost gauge refills (2 = twice as fast) |
-| `@air_gravity` | 3 | How hard cars in the air are pulled down (1 = normal GTA) |
+| `@air_gravity` | 2 | How hard cars in the air are pulled down (1 = normal GTA) |
 | `@downforce` | 1 | Grip from downforce at speed (0 = none, 2 = glued down) |
 | `@police_power` | 2 | Engine power of police cars chasing you |
 | `@mode` | paradise | `off` gives you normal GTA V back without uninstalling |
