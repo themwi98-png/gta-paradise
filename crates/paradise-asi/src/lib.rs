@@ -100,19 +100,10 @@ struct Destination {
     pos: Vec3,
 }
 
-const DEFAULT_INI: &str = "\
-# gta-paradise teleport destinations: name x y z (GTA world coordinates)
-# F6 cycles through them; this file is re-read on every press.
-paradise_road 994.9 862.7 1015.3
-test_platform_low -150 6450 132
-test_platform_high -150 6450 1017
-";
-
+/// Teleport destinations (name x y z lines in paradise.ini; none if the
+/// file is missing: the setup puts it back, so nothing is written here).
 fn load_destinations() -> Vec<Destination> {
-    let text = std::fs::read_to_string("paradise.ini").unwrap_or_else(|_| {
-        let _ = std::fs::write("paradise.ini", DEFAULT_INI);
-        DEFAULT_INI.to_string()
-    });
+    let text = std::fs::read_to_string("paradise.ini").unwrap_or_default();
     text.lines()
         .filter(|l| !l.trim_start().starts_with('#') && !l.trim_start().starts_with('@'))
         .filter_map(|l| {
@@ -142,7 +133,7 @@ struct Settings {
 
 fn load_settings() -> Settings {
     let text = std::fs::read_to_string("paradise.ini").unwrap_or_default();
-    let mut s = Settings { paradise: true, start: None, wreck: Default::default(), boost: Default::default(), air_gravity: 2.0, downforce: 1.0, police: Default::default(), debug_log: false, perf: true };
+    let mut s = Settings { paradise: true, start: None, wreck: Default::default(), boost: Default::default(), air_gravity: 3.0, downforce: 1.0, police: Default::default(), debug_log: false, perf: true };
     for line in text.lines() {
         let p: Vec<&str> = line.split_whitespace().collect();
         let on = |v: &str| !(v.eq_ignore_ascii_case("off") || v == "0" || v.eq_ignore_ascii_case("false"));

@@ -44,6 +44,9 @@ fn installed(c: &Ctx) -> String {
     for rel in ["GTA5.exe", "update/update.rpf", "mods/update/update.rpf", "mods/update/x64/dlcpacks/bpparadise/dlc.rpf", "paradise.asi", "paradise_col.bin", "paradise_props.csv"] {
         ids.push(file_id(&g.join(rel)));
     }
+    // A deleted paradise.ini (to get the defaults back) is put back. Its
+    // contents aren't covered: changing settings shouldn't reinstall.
+    ids.push(g.join("paradise.ini").is_file().to_string());
     ids.join("|")
 }
 

@@ -64,6 +64,39 @@ copies of both games, and are never uploaded here.
    10–20 minutes, 10 GB free disk space). Updates only redo what changed.
 4. Start GTA V and load story mode.
 
+## Settings
+
+Most of the mod can be tuned in **`paradise.ini`**, in your GTA V folder (next
+to `GTA5.exe`):
+
+1. Open it with Notepad (right-click > Open with > Notepad).
+2. Change a number, or `on` / `off`, after a setting's name. Lines starting
+   with `#` are notes explaining each setting.
+3. Save. **No restart needed:** the game picks up changes within a few
+   seconds, so you can tweak while playing.
+
+Updating the mod keeps your values. If you break something, delete the file
+and run `paradise-setup.exe` again to get the defaults back.
+
+The ones you're most likely to want:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `@wreck` | on | Hard crashes wreck the car (slow motion, then a fresh car) |
+| `@wreck_speed` | 18 | How hard a hit has to be to wreck (sudden speed loss in m/s; 18 = 65 km/h) |
+| `@slowmo` | 0.15 | Game speed during the wreck slow motion (1 = normal) |
+| `@crash_time` | 5 | Seconds of slow motion before the respawn |
+| `@precrash` | on | Start the slow motion just before a wreck you can't avoid |
+| `@boost_seconds` | 7 | How long a full boost gauge lasts |
+| `@boost_fill` | 1.5 | How fast the boost gauge refills (2 = twice as fast) |
+| `@air_gravity` | 3 | How hard cars in the air are pulled down (1 = normal GTA) |
+| `@downforce` | 1 | Grip from downforce at speed (0 = none, 2 = glued down) |
+| `@police_power` | 2 | Engine power of police cars chasing you |
+| `@mode` | paradise | `off` gives you normal GTA V back without uninstalling |
+
+Every setting is described in the file itself and in
+[docs/FEATURES.md](docs/FEATURES.md#settings-paradiseini-in-the-gta-folder).
+
 ## Project layout
 
 | Folder | What it is |
