@@ -19,6 +19,18 @@ traffic, pedestrians and police live in it, with Burnout-style driving on top.
 The full list, with what's confirmed working, is in
 [docs/FEATURES.md](docs/FEATURES.md).
 
+## Known issues
+
+- **The minimap and GPS still show Los Santos.** The pause-menu map, minimap
+  and route guidance haven't been replaced yet.
+- **Burnout's low-detail backdrop hills are missing**, so the distant
+  scenery around the edge of the city isn't there.
+- **Low-detail (LOD) models are missing.** Buildings and scenery only have
+  their full-detail models, so far-away parts of the city don't show until
+  you get closer.
+- **Out-of-bounds collision is rough.** Expect some glitches off the main
+  roads (see the first feature above).
+
 ## No game files included
 
 This repository contains only the mod's own code and hand-made edits. The map,
