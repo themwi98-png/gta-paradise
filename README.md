@@ -4,6 +4,7 @@ Burnout Paradise City in GTA V story mode: the whole of Paradise City, from
 **Burnout Paradise Remastered**, replaces Los Santos in **GTA V Legacy**. GTA's
 traffic, pedestrians and police live in it, with Burnout-style driving on top.
 
+- **True Open-World Paradise City:** custom collision meshes added for the vast majority of out-of-bounds surfaces. Still very rough, so expect collision glitches out of bounds, but there are far fewer areas to fall through the map. 
 - **Burnout crashes:** cars crumple and wreck in slow motion with a crash
   camera, then you respawn nearby in a fresh copy of your car.
 - **Boost:** a gauge you fill by driving fast, near misses, drifting, jumps
