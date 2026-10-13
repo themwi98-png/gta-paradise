@@ -1,0 +1,6 @@
+# Line endings: keep LF for everything text, so the bash scripts work after
+# a fresh download on Windows too.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.dll binary
+*.png binary
