@@ -1,5 +1,7 @@
 # GTA Paradise
 
+[![Watch the video](https://img.youtube.com/vi/2o_EHrRY4cg/maxresdefault.jpg)](https://www.youtube.com/watch?v=2o_EHrRY4cg)
+
 Burnout Paradise City in GTA V story mode: the whole of Paradise City, from
 **Burnout Paradise Remastered**, replaces Los Santos in **GTA V Legacy**. GTA's
 traffic, pedestrians and police live in it, with Burnout-style driving on top.
