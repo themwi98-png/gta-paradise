@@ -3,26 +3,6 @@
 Step-by-step instructions for editing the map and getting changes into the
 game. For what the mod does, see [FEATURES.md](FEATURES.md).
 
-You can always skip the commands and just ask Claude ("sync my marks",
-"install my spawn zones", "rebuild the sidewalks"…) — it runs them for you.
-
----
-
-## Running a command
-
-Commands are run in **Git Bash** from your `claudeCode` folder.
-
-- Easiest: the **Terminal panel** in the Claude app (it opens in `claudeCode`).
-  Paste the command, press Enter.
-- Or open Git Bash yourself and first go to the folder:
-  ```bash
-  cd ~/claudeCode
-  ```
-
-**Close GTA before any install or rebuild.** The scripts refuse to run while
-it's open (it locks the files).
-
----
 
 ## The map viewer / editor
 
@@ -133,10 +113,6 @@ the game running. A reinstall overwrites it with the project's copy
 (`gta-paradise/tools/paradise.ini`), so tell Claude any values you want kept.
 All settings are listed in [FEATURES.md](FEATURES.md#settings-paradiseini-in-the-gta-folder).
 
-## Pointing out a spot
-
-Press **F9** in game. Each press adds a numbered line to `paradise_marks.csv`
-in the GTA folder; tell Claude the mark number and what's wrong.
 
 ## Other scripts
 
@@ -145,33 +121,3 @@ in the GTA folder; tell Claude the mark number and what's wrong.
 | `bash gta-paradise/tools/install_dlc.sh` | Re-installs everything already built (plugin, settings, spawn zones…) |
 | `bash gta-paradise/tools/build_crash.sh` | Rebuilds car handling (damage, speed, grip) |
 | `VIS_UNITS=all bash gta-paradise/tools/build_dlc.sh tools/collision/paradise_extra.pcx --offset 0,0,9.9` | Rebuilds everything (slow) |
-
----
-
-## Making a release (the installer)
-
-```bash
-bash gta-paradise/tools/package_release.sh
-```
-
-Builds `dist/GTA-Paradise-<version>.zip` (version from
-`crates/paradise-setup/Cargo.toml`): `paradise-setup.exe`, the converters
-(`bpx.exe`, `cwconv.exe`), the plugin, and the mod's data (`tools/collision`,
-`tools/edits`, prop table, settings). No game files and nothing from
-CodeWalker. It refuses to package if your Windows user name is in any file.
-
-Players unzip it and run `paradise-setup.exe`, a setup window (instructions for them:
-`docs/PLAYER_README.txt`, shipped as README.txt). It finds GTA V Legacy,
-Burnout Paradise Remastered and CodeWalker, builds in
-`%LOCALAPPDATA%\GTA-Paradise\work`, and installs. Later versions only redo
-the steps whose inputs changed.
-
-The installer runs the same steps as the scripts above. To try it on this
-project without packaging:
-
-```bash
-gta-paradise/target/release/paradise-setup-cli.exe --dev
-```
-
-(`--only props,install` for single steps, `--rebuild` to redo everything;
-`paradise-setup.exe --dev` opens the window on this project instead.)
