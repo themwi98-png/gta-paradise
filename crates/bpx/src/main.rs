@@ -3,6 +3,7 @@ mod colsrc;
 mod edits;
 mod export;
 mod gta;
+mod gtadata;
 mod gtavis;
 mod navmesh;
 mod paths;
@@ -20,6 +21,9 @@ const USAGE: &str = "usage:
   bpx dump <bundle> <type-hex> [count] [bytes]
   bpx export <game-dir> <out-dir> <unit|all> [unit...]
   bpx overview <game-dir> <out-dir> <unit|all> [unit...]   (low detail, untextured)
+  bpx handling <handling_src-dir> <out-dir>   (Burnout-style crash damage, speed, grip)
+  bpx strip-base-map <list.txt> <images.meta> <gta5.meta> <out-dir> | pack <content.xml> <out>
+  bpx popzone <burnout-dir> <original popzone.ipl> <out popzone.ipl>
   bpx col-split <stock WORLDCOL.BIN> <combined collision> <out.pcx>
   bpx collision <game-dir|WORLDCOL file> <out-dir> <unit|all> [unit...] [--base <WORLDCOL>]
   bpx surfaces <game-dir> [unit-step]   (report what each collision surface id is)
@@ -60,6 +64,12 @@ fn main() -> Result<()> {
             let step = args.get(2).map_or(Ok(8), |s| s.parse())?;
             collision::analyse_materials(&PathBuf::from(&args[1]), step)
         }
+        Some("handling") if args.len() >= 3 => gtadata::handling(&PathBuf::from(&args[1]), &PathBuf::from(&args[2])),
+        Some("strip-base-map") if args.len() >= 4 && args[1] == "pack" => gtadata::strip_pack(&PathBuf::from(&args[2]), &PathBuf::from(&args[3])),
+        Some("strip-base-map") if args.len() >= 5 => {
+            gtadata::strip_base_map(&PathBuf::from(&args[1]), &PathBuf::from(&args[2]), &PathBuf::from(&args[3]), &PathBuf::from(&args[4]))
+        }
+        Some("popzone") if args.len() >= 4 => gtadata::popzone(&PathBuf::from(&args[1]), &PathBuf::from(&args[2]), &PathBuf::from(&args[3])),
         Some("col-split") if args.len() >= 4 => colsrc::split(&PathBuf::from(&args[1]), &PathBuf::from(&args[2]), &PathBuf::from(&args[3])),
         Some("collision") if args.len() >= 4 => {
             let mut rest: Vec<&String> = args[3..].iter().collect();

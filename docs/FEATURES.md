@@ -76,7 +76,7 @@ Last updated: 2026-10-12
 
 | Feature | Status | Notes |
 |---|---|---|
-| Much more crash damage on all cars | ✅ | All 791 vehicles (base game + DLC): dents 6×, body damage 4×, engine damage 3× (`tools/make_handling.py`). |
+| Much more crash damage on all cars | ✅ | All 791 vehicles (base game + DLC): dents 6×, body damage 4×, engine damage 3× (`HANDLING` in `crates/bpx/src/gtadata.rs`). |
 | Faster cars | ✅ | Top speed 1.35×, engine power 1.5×, brakes 1.25×. |
 | More grip | 🟡 | Cornering and sliding grip 1.4× (was 1.2×), wheelspin cut to 0.6×. |
 | Heavier jumps | ✅ | Cars in the air fall at 2× gravity (`@air_gravity`). |

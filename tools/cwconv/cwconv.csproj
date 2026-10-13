@@ -1,7 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!-- Converts CodeWalker XML (e.g. .ybn.xml) to GTA V binary resources using
-       the user's CodeWalker.Core.dll. Set CodeWalkerDir to point elsewhere. -->
+       the user's CodeWalker.Core.dll. Set CodeWalkerDir to point elsewhere.
+       CodeWalker's DLLs are not copied: they are loaded at run time from
+       the CODEWALKER_DIR environment variable, else the CodeWalkerDir used
+       to build (see CodeWalkerLocator in Program.cs). -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
@@ -14,13 +17,19 @@
   <ItemGroup>
     <Reference Include="CodeWalker.Core">
       <HintPath>$(CodeWalkerDir)\CodeWalker.Core.dll</HintPath>
+      <Private>false</Private>
     </Reference>
     <Reference Include="SharpDX">
       <HintPath>$(CodeWalkerDir)\SharpDX.dll</HintPath>
+      <Private>false</Private>
     </Reference>
     <Reference Include="SharpDX.Mathematics">
       <HintPath>$(CodeWalkerDir)\SharpDX.Mathematics.dll</HintPath>
+      <Private>false</Private>
     </Reference>
+    <!-- Development builds remember where CodeWalker is; release builds
+         (-p:ForRelease=true) don't, so no local path ends up in them. -->
+    <AssemblyMetadata Include="CodeWalkerDir" Value="$(CodeWalkerDir)" Condition="'$(ForRelease)' != 'true'" />
   </ItemGroup>
 
 </Project>

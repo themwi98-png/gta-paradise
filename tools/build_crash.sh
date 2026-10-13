@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds Burnout-strength crash damage (Rockstar's handling files with the
-# damage multipliers scaled, for the mods update.rpf) and installs everything. Tune the multipliers in tools/make_handling.py.
+# damage multipliers scaled, for the mods update.rpf) and installs everything.
+# Tune the multipliers in HANDLING, crates/bpx/src/gtadata.rs.
 #
 #   tools/build_crash.sh [--refresh]   (--refresh re-extracts Rockstar's files)
 set -euo pipefail
@@ -21,5 +22,6 @@ if [ "${1:-}" = "--refresh" ] || [ ! -f "$SRC/_update/update/update.rpf/common/d
 fi
 
 rm -rf out/crash out/dlc_crash
-python -I tools/make_handling.py "$SRC" out/crash/update
+cargo build --release -q -p bpx
+./target/release/bpx handling "$SRC" out/crash/update
 bash tools/install_dlc.sh

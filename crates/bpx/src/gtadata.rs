@@ -1,0 +1,365 @@
+//! Edits to Rockstar's own data files, made from the player's copies:
+//!
+//! - `bpx handling`: Burnout-style handling (crash damage, speed, grip).
+//! - `bpx strip-base-map`: Los Santos taken out of the level's file lists
+//!   and out of Rockstar's patch packs.
+//! - `bpx popzone`: GTA's population zones from Burnout's district map.
+//!
+//! Rockstar's files are kept byte for byte apart from the edits.
+
+use anyhow::{bail, Context, Result};
+use bnd2::Bundle;
+use bpworld::Res;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
+
+// --- Handling -------------------------------------------------------------
+
+/// How much harder crashes hit (Rockstar's values average about 1.0 for
+/// deformation and collision, 1.5 for engine) and how much faster cars go,
+/// with upper limits (much higher deformation tears a car's physics apart).
+const HANDLING: [(&str, f64, f64); 9] = [
+    // Size and depth of dents.
+    ("fDeformationDamageMult", 6.0, 25.0),
+    // Body health lost per crash.
+    ("fCollisionDamageMult", 4.0, 10.0),
+    // Engine health lost per crash (smoke, fire, breakdown).
+    ("fEngineDamageMult", 3.0, 8.0),
+    // Top speed (the gearing's flat-out speed).
+    ("fInitialDriveMaxFlatVel", 1.35, 500.0),
+    // Engine power: acceleration, and reaching that top speed.
+    ("fInitialDriveForce", 1.5, 3.0),
+    // Stronger brakes to match.
+    ("fBrakeForce", 1.25, 3.0),
+    // Grip: peak cornering grip, and grip while sliding (so slides are
+    // catchable at speed).
+    ("fTractionCurveMax", 1.4, 5.0),
+    ("fTractionCurveMin", 1.4, 5.0),
+    // Less wheelspin pulling away (the extra engine power spins the tyres).
+    ("fLowSpeedTractionLossMult", 0.6, 5.0),
+];
+
+/// Scales the handling fields in one handling.meta; returns the new text and
+/// how many values changed. A field is `<name` + whitespace + `value="` +
+/// number + `"`.
+fn scale_handling(text: &str) -> (String, usize) {
+    let mut out = String::with_capacity(text.len());
+    let mut n = 0;
+    let mut rest = text;
+    'outer: while let Some(lt) = rest.find('<') {
+        out.push_str(&rest[..lt]);
+        let tail = &rest[lt + 1..];
+        for (name, scale, cap) in HANDLING {
+            let Some(after) = tail.strip_prefix(name) else { continue };
+            let ws = after.len() - after.trim_start().len();
+            if ws == 0 {
+                continue;
+            }
+            let Some(num_start) = after[ws..].strip_prefix("value=\"") else { continue };
+            let num_len = num_start.find(|c: char| !(c.is_ascii_digit() || "-.eE+".contains(c))).unwrap_or(num_start.len());
+            if num_len == 0 || !num_start[num_len..].starts_with('"') {
+                continue;
+            }
+            let Ok(v) = num_start[..num_len].parse::<f64>() else { continue };
+            let head_len = 1 + name.len() + ws + "value=\"".len();
+            out.push_str(&rest[lt..lt + head_len]);
+            out.push_str(&format!("{:.6}", (v * scale).min(v.max(cap))));
+            n += 1;
+            rest = &num_start[num_len..];
+            continue 'outer;
+        }
+        out.push('<');
+        rest = tail;
+    }
+    out.push_str(rest);
+    (out, n)
+}
+
+/// `bpx handling <handling_src-dir> <out-dir>`: Rockstar's handling files
+/// with the fields in HANDLING scaled, at the paths update.rpf uses:
+///     common/data/handling.meta                     base-game vehicles
+///     dlc_patch/<pack>/common/data/handling.meta    each DLC pack's vehicles
+/// (update.rpf's dlc_patch folder overrides a pack's files; where Rockstar
+/// already ships a patch, that patch is the one scaled.) The source folder:
+///     _update/update/update.rpf/common/data/handling.meta
+///     _update/update/update.rpf/dlc_patch/<pack>/common/data/handling.meta
+///     <pack>/handling.meta
+pub fn handling(src: &Path, out: &Path) -> Result<()> {
+    let upd = src.join("_update/update/update.rpf");
+    let mut files = vec![(upd.join("common/data/handling.meta"), out.join("common/data/handling.meta"))];
+    let mut packs: Vec<PathBuf> = std::fs::read_dir(src)?.filter_map(|e| Some(e.ok()?.path())).collect();
+    packs.sort();
+    for d in packs {
+        let name = d.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+        if name.starts_with('_') || !d.join("handling.meta").is_file() {
+            continue;
+        }
+        let rel = Path::new("dlc_patch").join(name.to_lowercase()).join("common/data/handling.meta");
+        let patch = upd.join(&rel);
+        files.push((if patch.is_file() { patch } else { d.join("handling.meta") }, out.join(rel)));
+    }
+    let mut total = 0;
+    for (s, t) in &files {
+        let text = std::fs::read_to_string(s).with_context(|| format!("reading {}", s.display()))?;
+        let (text, n) = scale_handling(&text);
+        std::fs::create_dir_all(t.parent().unwrap())?;
+        std::fs::write(t, text)?;
+        total += n;
+    }
+    println!("handling: {} files, {total} values scaled -> {}", files.len(), out.display());
+    Ok(())
+}
+
+// --- Los Santos out of the file lists -------------------------------------
+
+fn read_text(path: &Path) -> Result<String> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(text.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(text))
+}
+
+/// The value of the first `<filename>` in `s`, trimmed.
+fn filename(s: &str) -> Option<&str> {
+    let a = s.find("<filename>")? + "<filename>".len();
+    let rest = &s[a..];
+    let end = rest.find('<')?;
+    if !rest[end..].starts_with("</filename>") {
+        return None;
+    }
+    let v = rest[..end].trim();
+    (!v.is_empty()).then_some(v)
+}
+
+/// Drops `<Item>...</Item>` blocks (with their indent and line end) for
+/// which `drop(block)` says so. `innermost`: only blocks with no `<Item>`
+/// inside; otherwise each block runs to the first `</Item>`.
+fn strip_items(text: &str, innermost: bool, mut drop: impl FnMut(&str) -> bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut pos = 0;
+    let mut search = 0;
+    // End of the last block found: indentation is only taken back to it.
+    let mut last_end = 0;
+    while let Some(i) = text[search..].find("<Item>").map(|i| search + i) {
+        let body_start = i + "<Item>".len();
+        let Some(j) = text[body_start..].find("</Item>").map(|j| body_start + j) else { break };
+        if innermost && text[body_start..j].contains("<Item>") {
+            search = body_start;
+            continue;
+        }
+        let mut start = i;
+        while start > last_end && matches!(text.as_bytes()[start - 1], b' ' | b'\t') {
+            start -= 1;
+        }
+        let mut end = j + "</Item>".len();
+        while end < text.len() && matches!(text.as_bytes()[end], b' ' | b'\t') {
+            end += 1;
+        }
+        if text[end..].starts_with('\r') {
+            end += 1;
+        }
+        if text[end..].starts_with('\n') {
+            end += 1;
+        }
+        if drop(&text[body_start..j]) {
+            out.push_str(&text[pos..start]);
+            pos = end;
+        }
+        search = end;
+        last_end = end;
+    }
+    out.push_str(&text[pos..]);
+    out
+}
+
+/// Is `path` (forward slashes) inside a Los Santos map folder, or a map
+/// additions archive?
+fn ls_path(path: &str) -> bool {
+    let p = path.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(i) = p[from..].find("levels/gta5/").map(|i| from + i) {
+        let r = &p[i + "levels/gta5/".len()..];
+        if ["_citye/", "_cityw/", "_hills/"].iter().any(|d| r.starts_with(d)) {
+            return true;
+        }
+        let seg = &r[..r.find('/').unwrap_or(r.len())];
+        if let Some(a) = seg.find("_additions") {
+            if seg[a + "_additions".len()..].contains(".rpf") {
+                return true;
+            }
+        }
+        from = i + 1;
+    }
+    false
+}
+
+/// `bpx strip-base-map pack <content.xml> <out>`: Rockstar's patch packs
+/// (patchday*ng, patch2026_01...) re-add updated copies of Los Santos
+/// sectors and map additions; every innermost `<Item>` naming one goes (the
+/// data file entries and their filesToEnable / filesToInvalidate entries).
+pub fn strip_pack(content: &Path, out: &Path) -> Result<()> {
+    let text = read_text(content)?;
+    let mut removed = 0;
+    let text = strip_items(&text, true, |body| {
+        let path = filename(body).unwrap_or(body).trim().replace('\\', "/");
+        let hit = !path.contains('<') && ls_path(&path);
+        removed += hit as usize;
+        hit
+    });
+    std::fs::write(out, text)?;
+    println!("{}: removed {removed} Los Santos item(s)", content.file_name().unwrap_or_default().to_string_lossy());
+    Ok(())
+}
+
+/// `bpx strip-base-map <list.txt> <images.meta> <gta5.meta> <out-dir>`:
+/// removes Los Santos / Blaine County map archives from the level's data
+/// file lists, so the game never mounts them. images.meta declares every
+/// map archive before any DLC loads, which is why DLC filesToDisable could
+/// not remove them: items whose `<filename>` is in the list go. gta5.meta
+/// loses the permanent .ityp files inside dropped archives, and the
+/// scenario manifests (scenario points are all placed for Los Santos).
+/// Inputs should be the pristine game files, so running again is harmless.
+pub fn strip_base_map(list: &Path, images: &Path, gta5: &Path, out: &Path) -> Result<()> {
+    let names: HashSet<String> = read_text(list)?
+        .lines()
+        .map(|l| l.trim().to_lowercase())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    let dirs: HashSet<String> = names.iter().map(|p| format!("{}/", p.rsplit_once('/').map_or(p.as_str(), |(d, _)| d))).collect();
+    std::fs::create_dir_all(out)?;
+
+    let mut removed = Vec::new();
+    let text = strip_items(&read_text(images)?, false, |body| {
+        let hit = filename(body).is_some_and(|f| names.contains(&f.to_lowercase()));
+        if hit {
+            removed.push(filename(body).unwrap().to_string());
+        }
+        hit
+    });
+    std::fs::write(out.join("images.meta"), text)?;
+    println!("images.meta: removed {} archive(s)", removed.len());
+
+    // Permanent ityps directly in (or under) a dropped sector folder, e.g.
+    // _citye/citye_xr.ityp or _citye/downtown_01/..._permanent.ityp.
+    const AREA: [&str; 3] = ["platform:/levels/gta5/_citye/", "platform:/levels/gta5/_cityw/", "platform:/levels/gta5/_hills/"];
+    let mut removed = Vec::new();
+    let text = strip_items(&read_text(gta5)?, false, |body| {
+        let Some(f) = filename(body) else { return false };
+        let fl = f.to_lowercase();
+        let parent = format!("{}/", fl.rsplit_once('/').map_or(fl.as_str(), |(d, _)| d));
+        let hit = fl.ends_with(".ityp") && AREA.iter().any(|a| fl.starts_with(a)) && dirs.iter().any(|d| fl.starts_with(d.as_str()) || d.starts_with(&parent));
+        if hit {
+            removed.push(f.to_string());
+        }
+        hit
+    });
+    let text = strip_items(&text, false, |body| {
+        let Some(f) = filename(body) else { return false };
+        let hit = f.to_lowercase().ends_with("/sp_manifest.#mt");
+        if hit {
+            removed.push(f.to_string());
+        }
+        hit
+    });
+    std::fs::write(out.join("gta5.meta"), text)?;
+    println!("gta5.meta: removed {} item(s): {}", removed.len(), removed.join(", "));
+    Ok(())
+}
+
+// --- Population zones -----------------------------------------------------
+
+/// Where the district grid lies in GTA's world (lined up by hand in
+/// tools/viewer/district_aligner.html; the mainland and the island are
+/// painted at different scales): cell size x / y, west and north edge.
+struct Align {
+    cx: f64,
+    cy: f64,
+    x0: f64,
+    y0: f64,
+}
+const MAINLAND: Align = Align { cx: 32.267, cy: 23.767, x0: -4199.0, y0: 3837.0 };
+const ISLAND: Align = Align { cx: 18.117, cy: 14.517, x0: -1031.0, y0: 1711.0 };
+const ISLAND_IDS: std::ops::Range<u8> = 18..23;
+
+/// Burnout district -> Los Santos zone label (all LSPD-policed, picked for
+/// character).
+const LABEL: [&str; 23] = [
+    "DelPe", "Mirr", "Koreat", "Beach", "PBluff", "CHIL", "CHIL", "CHIL", "Elysian", "Rockf", "Elysian", "CHIL", "CHIL", "Richm", "Downt", "LMesa",
+    "Murri", "Vesp", "DelPe", "DeLBe", "Alta", "Beach", "PBluff",
+];
+
+/// Burnout's district map (DISTRICTS.DAT): one district id per cell, rows
+/// north to south (255: none).
+pub fn districts(game: &Path) -> Result<(usize, usize, Vec<u8>)> {
+    let b = Bundle::open(game.join("DISTRICTS.DAT"))?;
+    let e = b.entries.first().context("DISTRICTS.DAT is empty")?;
+    let r = Res::load(&b, e)?;
+    let d = &r.main;
+    if d.len() < 0x14 {
+        bail!("DISTRICTS.DAT: unexpected layout");
+    }
+    let (w, h) = (u16::from_le_bytes([d[0x10], d[0x11]]) as usize, u16::from_le_bytes([d[0x12], d[0x13]]) as usize);
+    let cells = d.get(0x14..0x14 + w * h).context("DISTRICTS.DAT: grid cut short")?;
+    Ok((w, h, cells.to_vec()))
+}
+
+/// Greedy rectangles over a grid mask: (row0, col0, row1, col1).
+fn boxes(mask: &[bool], w: usize, h: usize) -> Vec<(usize, usize, usize, usize)> {
+    let mut used = vec![false; w * h];
+    let mut out = Vec::new();
+    for r in 0..h {
+        for c in 0..w {
+            if !mask[r * w + c] || used[r * w + c] {
+                continue;
+            }
+            let mut c1 = c;
+            while c1 + 1 < w && mask[r * w + c1 + 1] && !used[r * w + c1 + 1] {
+                c1 += 1;
+            }
+            let mut r1 = r;
+            while r1 + 1 < h && (c..=c1).all(|k| mask[(r1 + 1) * w + k] && !used[(r1 + 1) * w + k]) {
+                r1 += 1;
+            }
+            for rr in r..=r1 {
+                for k in c..=c1 {
+                    used[rr * w + k] = true;
+                }
+            }
+            out.push((r, c, r1, c1));
+        }
+    }
+    out
+}
+
+/// `bpx popzone <burnout-dir> <original popzone.ipl> <out popzone.ipl>`:
+/// each Burnout district becomes a Los Santos city zone (as boxes merged
+/// from the district grid); everything else falls into one large ocean box
+/// listed last.
+pub fn popzone(game: &Path, orig: &Path, out: &Path) -> Result<()> {
+    let (w, h, grid) = districts(game)?;
+    let orig = String::from_utf8_lossy(&std::fs::read(orig)?).into_owned();
+    let mut zone_of: BTreeMap<String, String> = BTreeMap::new();
+    for line in orig.lines() {
+        let p: Vec<&str> = line.split(',').map(str::trim).collect();
+        if p.len() >= 9 {
+            zone_of.entry(p[7].to_string()).or_insert_with(|| p[0].to_string());
+        }
+    }
+    let zone = |label: &str| zone_of.get(label).cloned().with_context(|| format!("popzone.ipl has no {label} zone"));
+    let mut lines = vec!["zone".to_string()];
+    for (d, label) in LABEL.iter().enumerate() {
+        let a = if ISLAND_IDS.contains(&(d as u8)) { &ISLAND } else { &MAINLAND };
+        let mask: Vec<bool> = grid.iter().map(|&g| g as usize == d).collect();
+        for (r0, c0, r1, c1) in boxes(&mask, w, h) {
+            let x0 = a.x0 + c0 as f64 * a.cx;
+            let x1 = a.x0 + (c1 + 1) as f64 * a.cx;
+            let y1 = a.y0 - r0 as f64 * a.cy;
+            let y0 = a.y0 - (r1 + 1) as f64 * a.cy;
+            lines.push(format!("{}, {x0:.2}, {y0:.2}, -200.0, {x1:.2}, {y1:.2}, 1500.0, {label}, 0", zone(label)?));
+        }
+    }
+    let n = lines.len() - 1;
+    lines.push(format!("{}, -16000, -16000, -200.0, 16000, 16000, 1500.0, OCEANA, 0", zone("OCEANA")?));
+    lines.push("end".to_string());
+    std::fs::write(out, lines.join("\r\n") + "\r\n")?;
+    println!("popzone: {n} district boxes + ocean fallback");
+    Ok(())
+}

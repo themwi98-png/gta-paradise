@@ -32,7 +32,7 @@ rm -rf "$GTA/mods/update/x64/dlcpacks/bpcrash"
 mkdir -p out/base_meta
 $CW extract "$GTA" 'update\update.rpf\common\data\levels\gta5\images.meta' out/base_meta/images.orig.meta
 $CW extract "$GTA" 'update\update.rpf\common\data\levels\gta5\gta5.meta' out/base_meta/gta5.orig.meta
-python -I tools/strip_base_map.py tools/base_map_disable.txt out/base_meta/images.orig.meta out/base_meta/gta5.orig.meta out/base_meta
+./target/release/bpx strip-base-map tools/base_map_disable.txt out/base_meta/images.orig.meta out/base_meta/gta5.orig.meta out/base_meta
 $CW rpf-put "$GTA" "$GTA/mods/update/update.rpf" common/data/levels/gta5/images.meta out/base_meta/images.meta --open
 $CW rpf-put "$GTA" "$GTA/mods/update/update.rpf" common/data/levels/gta5/gta5.meta out/base_meta/gta5.meta --open
 # Rockstar's patch packs re-add updated Los Santos sectors; give the mods
@@ -44,7 +44,7 @@ grep -v '^#' tools/base_map_packs.txt | while read -r p; do
   mkdir -p "$(dirname "$dst")"
   [ -f "$dst" ] || cp "$src" "$dst"
   $CW extract "$GTA" "update\\x64\\dlcpacks\\$p\\dlc.rpf\\content.xml" "out/base_meta/$p.orig.xml" > /dev/null
-  python -I tools/strip_base_map.py pack "out/base_meta/$p.orig.xml" "out/base_meta/$p.xml"
+  ./target/release/bpx strip-base-map pack "out/base_meta/$p.orig.xml" "out/base_meta/$p.xml"
   $CW rpf-put "$GTA" "$dst" content.xml "out/base_meta/$p.xml" --open
   # The game still mounts some of these archives with no data file naming
   # them (seen for patchday1ng/3ng), so empty them as well.
@@ -61,9 +61,9 @@ if [ -d out/gta_navmesh ]; then
   done
 fi
 # Population zones from Burnout's districts (LSPD everywhere, peds on the island).
-if [ -f out/debug/districts.npy ]; then
+if true; then
   $CW extract "$GTA" 'update\update.rpf\common\data\levels\gta5\popzone.ipl' out/base_meta/popzone.orig.ipl > /dev/null
-  python -I tools/make_popzone.py out/debug/districts.npy out/base_meta/popzone.orig.ipl out/popzone_paradise.ipl
+  ./target/release/bpx popzone "${GAME_DIR:-../Burnout Paradise Remastered}" out/base_meta/popzone.orig.ipl out/popzone_paradise.ipl
   $CW rpf-put "$GTA" "$GTA/mods/update/update.rpf" common/data/levels/gta5/popzone.ipl out/popzone_paradise.ipl --open
 fi
 # Burnout-strength crash damage (tools/build_crash.sh): Rockstar's handling

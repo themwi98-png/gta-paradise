@@ -6,3 +6,4 @@ tools/cwconv/obj/
 # Python caches
 __pycache__/
 *.pyc
+/dist

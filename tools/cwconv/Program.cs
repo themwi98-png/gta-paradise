@@ -877,3 +877,30 @@ static int Api(string filter)
 
 // One level archive and the change set that enables it.
 record LevelSet(string ChangeSet, string LevelRel, bool Cache, bool Plain, bool Mp, bool Meta, List<string> Ityps);
+
+/// Finds CodeWalker's DLLs (not shipped with cwconv): in CODEWALKER_DIR if
+/// set (the installer sets it to the player's CodeWalker folder), else the
+/// folder cwconv was built against. Runs before any other code.
+static class CodeWalkerLocator
+{
+    [System.Runtime.CompilerServices.ModuleInitializer]
+    internal static void Init()
+    {
+        var dir = Environment.GetEnvironmentVariable("CODEWALKER_DIR");
+        if (string.IsNullOrEmpty(dir))
+        {
+            dir = typeof(CodeWalkerLocator).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
+                .FirstOrDefault(a => a.Key == "CodeWalkerDir")?.Value;
+        }
+        if (string.IsNullOrEmpty(dir) || !File.Exists(Path.Combine(dir, "CodeWalker.Core.dll")))
+        {
+            Console.Error.WriteLine($"cwconv: CodeWalker not found (no CodeWalker.Core.dll in '{dir}'); set CODEWALKER_DIR to your CodeWalker folder.");
+        }
+        AppDomain.CurrentDomain.AssemblyResolve += (_, e) =>
+        {
+            if (string.IsNullOrEmpty(dir)) return null;
+            var path = Path.Combine(dir, new AssemblyName(e.Name).Name + ".dll");
+            return File.Exists(path) ? Assembly.LoadFrom(path) : null;
+        };
+    }
+}
