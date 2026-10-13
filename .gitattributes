@@ -4,3 +4,4 @@
 *.bat text eol=crlf
 *.dll binary
 *.png binary
+*.pcx binary
