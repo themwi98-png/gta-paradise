@@ -36,6 +36,7 @@ copies of both games, and are never uploaded here.
 - [ScriptHookV](http://www.dev-c.com/gtav/scripthookv/) for the GTA build you
   have.
 - [OpenIV](https://openiv.com/) with its `mods` folder set up (OpenIV.asi).
+- [CodeWalker](https://www.gta5-mods.com/tools/codewalker-gtav-interactive-3d-map) 3.0 (dev46 or newer), used to build the GTA files. Not included: its author hasn't released it under a licence that allows bundling it.
 
 ## Building it yourself (for now)
 
