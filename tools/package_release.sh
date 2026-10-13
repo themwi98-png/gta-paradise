@@ -40,10 +40,11 @@ cp docs/PLAYER_README.txt "$DIST/README.txt"
 cp LICENSE "$DIST/LICENSE.txt"
 echo "$VERSION" > "$DIST/version.txt"
 
-# Nothing personal inside: no Windows user name in any file.
+# Nothing personal inside: no Windows user name in any file (as a whole
+# word, so a GitHub name that contains it, like in LICENSE, is fine).
 USER_NAME=$(basename "$HOME")
-if grep -rlai -- "$USER_NAME" "$DIST" >/dev/null; then
-  echo "refusing: these files contain '$USER_NAME':"; grep -rlai -- "$USER_NAME" "$DIST"; exit 1
+if grep -rlaiw -- "$USER_NAME" "$DIST" >/dev/null; then
+  echo "refusing: these files contain '$USER_NAME':"; grep -rlaiw -- "$USER_NAME" "$DIST"; exit 1
 fi
 
 (cd dist && powershell -NoProfile -Command "Compress-Archive -Path '$NAME' -DestinationPath '$NAME.zip' -Force")
