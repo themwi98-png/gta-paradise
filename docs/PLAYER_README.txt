@@ -31,6 +31,9 @@ INSTALLING
 
 1. Close GTA V.
 2. Unzip this folder anywhere and run paradise-setup.exe.
+   Windows may say "Windows protected your PC" the first time: the setup
+   isn't digitally signed (signing costs money; most free mods aren't).
+   Click "More info", then "Run anyway".
 3. It finds your games and CodeWalker by itself. If one isn't found (or the
    wrong one is), type its folder or press Browse... to pick it. Green ticks
    mean everything is ready.
