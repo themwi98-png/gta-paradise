@@ -1,0 +1,11 @@
+[package]
+name = "paradise-asi"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "GTA V (Legacy) ScriptHookV plugin for the gta-paradise mod; installed as paradise.asi"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]

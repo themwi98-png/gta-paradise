@@ -1,0 +1,54 @@
+# Burnout prop -> GTA prop used in its place (bpx gta-props).
+# burnout_name,gta_model[,yaw_offset_degrees]
+# Orientation is matched automatically (props with an arm, like lamp posts
+# and traffic lights, point the arm the same way; others line up their long
+# side); the optional yaw offset turns the GTA prop further if it still faces
+# the wrong way. Burnout props not listed here are left out.
+
+# Lighting
+POL_Lamppost_Single,prop_streetlight_01
+POL_Lamppost_Single_Banner,prop_streetlight_01
+POL_Lamppost_double,prop_streetlight_03b
+POL_Lamppost_ornate,prop_streetlight_07b
+POL_Lamppost_Industrial,prop_streetlight_05
+pol_spotlight_01_PROP,prop_streetlight_14a
+
+# Traffic lights
+pol_trafficlight_08L,prop_traffic_01d
+pol_trafficlight_08R,prop_traffic_01d
+pol_trafficlight_10a_L,prop_traffic_01a
+pol_trafficlight_01_prop,prop_traffic_03a
+sma_railroadsignal_04_PROP,prop_traffic_rail_1a
+
+# Road works and barriers
+CON_Roadworks_02_PROP,prop_barrier_work06a
+STU_Roadworks_02_PROP,prop_barrier_work06a
+CON_Cone_01_prop,prop_roadcone01a
+FRE_Water_Barrels_01_PROP,prop_barrier_wat_03b
+STU_barrier01_prop,prop_barrier_work04a
+STU_barrier02_prop,prop_barrier_work06a
+stu_barrier02_prop_ISLAND,prop_barrier_work06a
+
+# Street furniture
+str_trashcan_03_PROP,prop_bin_01a
+str_dumpster_04_PROP,prop_dumpster_01a
+bench_02b,prop_bench_01a
+str_publicphone_05_PROP,prop_phonebox_04
+str_newspaperdispenser_03_prop,prop_news_disp_02a
+str_mailbox_02_PROP,prop_postbox_01a
+STR_ParkingMeter_01_PROP,prop_parknmeter_01
+sma_picktable_02_PROP,prop_picnictable_01
+sma_railroadbox_03_prop,prop_elecbox_02a
+
+# Clutter
+IND_Oil_Drum_01,prop_barrel_02a
+STU_oildrum01_prop,prop_barrel_01a
+rur_woodbarrel_01_PROP,prop_wooden_barrel
+IND_Crate_01_PROP,prop_box_wood01a
+IND_Crate_02_PROP,prop_box_wood01a
+ret_boxstack_01,prop_box_wood01a
+
+# Road signs
+Sign_Stop_P,prop_sign_road_01a
+Signage_Yield_P,prop_sign_road_02a
+Sign_DoNotEnter_P,prop_sign_road_03a

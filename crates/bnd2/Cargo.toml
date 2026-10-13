@@ -1,0 +1,10 @@
+[package]
+name = "bnd2"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Reader for Burnout Paradise (PC) bnd2 bundle files"
+
+[dependencies]
+anyhow.workspace = true
+flate2.workspace = true

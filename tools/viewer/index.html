@@ -1,0 +1,571 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paradise Viewer</title>
+<style>
+  :root { --bg: #1b1d21; --panel: #000000c0; --fg: #e8e8e8; --muted: #9aa0a6; --accent: #f0c419; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px system-ui, sans-serif; overflow: hidden; }
+  #panel { position: fixed; top: 8px; left: 8px; width: 250px; max-height: calc(100% - 16px); overflow-y: auto;
+           background: var(--panel); padding: 10px 12px; border-radius: 8px; box-sizing: border-box; }
+  #panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 12px 0 6px; }
+  #panel h2:first-child { margin-top: 0; }
+  label { display: flex; align-items: center; gap: 6px; padding: 2px 0; cursor: pointer; }
+  input[type=text] { width: 100%; box-sizing: border-box; background: #222; color: var(--fg); border: 1px solid #444; border-radius: 4px; padding: 4px 6px; }
+  button { background: #333; color: var(--fg); border: 1px solid #555; border-radius: 4px; padding: 4px 8px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .row { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+  #status { color: var(--muted); margin-top: 6px; }
+  #editstatus { color: var(--muted); font-size: 11px; margin-top: 5px; line-height: 1.35; }
+  #info { position: fixed; bottom: 8px; left: 8px; right: 8px; max-width: 640px; background: var(--panel); padding: 8px 12px;
+          border-radius: 8px; display: none; font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; }
+  #surfaces { font-size: 12px; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "./lib/three.module.js",
+  "three/addons/": "./lib/addons/"
+} }
+</script>
+<!-- Offline: three.js r160 is loaded from the local lib/ directory. -->
+</head>
+<body>
+<div id="panel">
+  <h2>Units</h2>
+  <input id="units" type="text" placeholder="e.g. 395-405 or 0-427">
+  <div class="row"><button id="load">Load</button><button id="frame">Frame</button><button id="top">Top</button></div>
+  <div id="status"></div>
+  <h2>Layers</h2>
+  <div id="layers"></div>
+  <h2>Collision</h2>
+  <label>Opacity <input id="opacity" type="range" min="0.1" max="1" step="0.05" value="1" style="flex:1"></label>
+  <label><input id="wire" type="checkbox"> Wireframe</label>
+  <label><input id="genonly" type="checkbox"> Only generated (magenta)</label>
+  <h2>Collision editor</h2>
+  <label><input id="editmode" type="checkbox"> Edit extra collision</label>
+  <label><input id="editnative" type="checkbox"> Include native collision (not just generated)</label>
+  <label><input id="multiSelect" type="checkbox" checked> Multi-select (click to toggle)</label>
+  <div class="row"><button id="deletePiece">Delete selected</button><button id="undoDelete">Undo delete</button></div>
+  <div class="row"><button id="clearSelection">Clear selection</button><button id="saveEdits">Export edits</button></div>
+  <div id="editstatus">Edits stay in this browser until exported. Only generated pieces in Extra collision can be selected.</div>
+  <h2>Traffic</h2>
+  <div id="trafficPanel"></div>
+  <h2>Water</h2>
+  <div id="waterPanel"></div>
+  <h2>Spawns</h2>
+  <div id="spawnPanel"></div>
+  <h2>Sidewalks</h2>
+  <div id="sidewalkPanel"></div>
+  <h2>Surfaces</h2>
+  <div id="surfaces"></div>
+</div>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { initTraffic } from './traffic.js';
+import { initWater } from './water.js';
+import { initSpawns } from './spawns.js';
+import { initSidewalks } from './sidewalks.js';
+
+// Layers map to export folders under out/ (see bpx export/overview/collision).
+const LAYERS = {
+  visual:   { label: 'Visual (full detail)', dir: '',                  collision: false },
+  overview: { label: 'Visual (overview)',    dir: 'overview/',         collision: false },
+  col:      { label: 'Collision (stock)',    dir: 'collision/',        collision: true },
+  extra:    { label: 'Collision (extra)',    dir: 'collision_extra/',  collision: true },
+};
+const SURFACES = ['asphalt_island', 'asphalt_road', 'concrete', 'rock_dirt', 'gravel', 'cobbles', 'stone', 'chainlink_fence',
+  'metal', 'wood_light', 'wood', 'sand', 'foliage', 'plastic_fabric', 'glass', 'water', 'rail_track', 'invisible_wall',
+  'grass_terrain', 'pavement'];
+
+const params = new URLSearchParams(location.search);
+const EDIT_STORAGE_KEY = 'paradise-collision-edits-v1';
+let savedEditState = { deleted: [], undo: [] };
+try {
+  const saved = JSON.parse(localStorage.getItem(EDIT_STORAGE_KEY) || 'null');
+  if (saved && Array.isArray(saved.deleted)) savedEditState = saved;
+} catch (_) {}
+const state = {
+  units: params.get('units') || '400',
+  layers: new Set((params.get('layers') || (params.get('set') === 'collision' ? 'col' : params.get('set') === 'overview' ? 'overview' : 'visual')).split(',')),
+  hiddenSurfaces: new Set(),
+  deleted: new Set(savedEditState.deleted),
+  undo: Array.isArray(savedEditState.undo) ? savedEditState.undo : [],
+};
+
+// Logarithmic depth keeps the near plane tiny (close zoom) without distant
+// geometry flickering.
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, logarithmicDepthBuffer: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x8fb8de);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+sun.position.set(1, 2, 1);
+scene.add(sun);
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.002, 50000);
+const controls = new OrbitControls(camera, renderer.domElement);
+// Zoom is our own (below): OrbitControls zooms toward its pivot, so close up
+// it crawls and panning (scaled by the pivot distance) slows to nothing.
+controls.enableZoom = false;
+controls.minDistance = 0;
+camera.position.set(0, 3000, 3000);
+// For inspecting the viewer from the browser console.
+window.paradiseViewer = { THREE, renderer, scene, camera, controls };
+
+const groups = {};
+for (const k of Object.keys(LAYERS)) { groups[k] = new THREE.Group(); groups[k].name = k; scene.add(groups[k]); }
+const loadedKeys = new Set();
+const selectedPolygons = new Map();
+const selectionGroup = new THREE.Group();
+selectionGroup.name = 'collision-selection';
+scene.add(selectionGroup);
+const selectionOverlays = [];
+const $ = (id) => document.getElementById(id);
+
+// Traffic editor (traffic.js): lanes and parked cars, picking ground points
+// on whatever visual / collision geometry is loaded.
+const groundRay = new THREE.Raycaster();
+function pickGround(e) {
+  groundRay.setFromCamera(new THREE.Vector2(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1), camera);
+  const hit = groundRay.intersectObjects(Object.values(groups), true).find((h) => h.object.visible && h.object.isMesh);
+  return hit ? hit.point : null;
+}
+// Zoom: each wheel notch moves the camera ZOOM_STEP of the way toward the
+// surface under the cursor (never through it, down to ZOOM_CLOSEST), then
+// re-centres the orbit pivot on the surface in the middle of the screen,
+// so orbiting and panning match what's in view. Shift while right-dragging
+// pans PAN_FAST times faster.
+const ZOOM_STEP = 0.2;
+const ZOOM_CLOSEST = 0.01;
+const PAN_FAST = 5;
+const zoomRay = new THREE.Raycaster();
+function surfaceAt(ndc) {
+  zoomRay.setFromCamera(ndc, camera);
+  const hit = zoomRay.intersectObjects(Object.values(groups), true).find((h) => h.object.visible && h.object.isMesh);
+  return hit ? hit.distance : null;
+}
+renderer.domElement.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const ndc = new THREE.Vector2(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  zoomRay.setFromCamera(ndc, camera);
+  const dir = zoomRay.ray.direction.clone();
+  const toSurface = surfaceAt(ndc) ?? camera.position.distanceTo(controls.target);
+  const notches = Math.max(-5, Math.min(5, e.deltaY / 100));
+  let move;
+  if (notches < 0) {
+    // In: a fraction of the way, stopping short of the surface.
+    move = Math.min(toSurface * (1 - Math.pow(1 - ZOOM_STEP, -notches)), toSurface - ZOOM_CLOSEST);
+  } else {
+    // Out: back the other way by the same factor.
+    move = -toSurface * (Math.pow(1 / (1 - ZOOM_STEP), notches) - 1);
+  }
+  if (!(Math.abs(move) > 1e-6)) return;
+  const shift = dir.multiplyScalar(move);
+  camera.position.add(shift);
+  // Pivot on the surface at the screen centre (straight ahead, so the view
+  // doesn't turn), or as far ahead as before if there's nothing there.
+  const ahead = surfaceAt(new THREE.Vector2(0, 0)) ?? Math.max(camera.position.distanceTo(controls.target), 1);
+  const forward = new THREE.Vector3();
+  camera.getWorldDirection(forward);
+  controls.target.copy(camera.position).addScaledVector(forward, Math.max(ahead, ZOOM_CLOSEST));
+  controls.update();
+}, { passive: false, capture: true });
+addEventListener('keydown', (e) => { if (e.key === 'Shift') controls.panSpeed = PAN_FAST; });
+addEventListener('keyup', (e) => { if (e.key === 'Shift') controls.panSpeed = 1; });
+addEventListener('blur', () => { controls.panSpeed = 1; });
+
+const traffic = initTraffic({ THREE, scene, camera, renderer, panel: $('trafficPanel'), info: $('info'), pickGround });
+const water = initWater({ THREE, scene, camera, panel: $('waterPanel'), pickGround });
+const spawns = initSpawns({ THREE, scene, camera, panel: $('spawnPanel'), pickGround });
+// Shows only the given collision surface ids (null: all), ticking the
+// Surfaces checkboxes to match.
+function showOnlySurfaces(ids) {
+  state.hiddenSurfaces = new Set(ids ? SURFACES.map((_, id) => id).filter((id) => !ids.includes(id)) : []);
+  $('surfaces').querySelectorAll('input').forEach((box, id) => { box.checked = !state.hiddenSurfaces.has(id); });
+  restyle();
+}
+const sidewalks = initSidewalks({ THREE, scene, panel: $('sidewalkPanel'), pickGround, showOnlySurfaces });
+
+function parseUnits(s) {
+  return s.split(',').flatMap((p) => {
+    const [a, b] = p.trim().split('-').map(Number);
+    if (Number.isNaN(a)) return [];
+    return b === undefined ? [a] : Array.from({ length: b - a + 1 }, (_, i) => a + i);
+  });
+}
+
+function surfaceOf(matName) {
+  const m = /^(gen_)?(\d+)_/.exec(matName || '');
+  return m ? { id: +m[2], generated: !!m[1] } : null;
+}
+
+function styleCollision(root) {
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    const s = surfaceOf(o.material.name);
+    const m = o.material;
+    m.transparent = +$('opacity').value < 1;
+    m.opacity = +$('opacity').value;
+    m.wireframe = $('wire').checked;
+    m.polygonOffset = true; m.polygonOffsetFactor = -1; m.polygonOffsetUnits = -1;
+    m.depthWrite = !m.transparent;
+    o.visible = !!s && !state.hiddenSurfaces.has(s.id) && (!$('genonly').checked || s.generated);
+  });
+}
+
+function editKey(unit, polygon) { return `extra:${unit}:${polygon}`; }
+
+function persistEdits() {
+  try { localStorage.setItem(EDIT_STORAGE_KEY, JSON.stringify({ deleted: [...state.deleted], undo: state.undo })); }
+  catch (e) { $('editstatus').textContent = `Could not save edits in this browser: ${e.message}`; }
+}
+
+// Any piece of the Extra collision layer (WORLDCOL_EXTRA: Burnout's native
+// collision plus the generated pieces), which is what GTA's collision is
+// built from; deletions are keyed by unit and polygon either way.
+function isExtraMesh(mesh, root) {
+  return root?.userData.layer === 'extra' && !!surfaceOf(mesh.material?.name);
+}
+
+// Pieces that can be selected: generated ones, and native ones too when
+// "Include native collision" is ticked.
+function isEditableMesh(mesh, root) {
+  return isExtraMesh(mesh, root) && ($('editnative').checked || !!surfaceOf(mesh.material?.name)?.generated);
+}
+
+function preparePolygonIds(root) {
+  root.traverse((mesh) => {
+    if (!mesh.isMesh || !isExtraMesh(mesh, root)) return;
+    const geometry = mesh.geometry;
+    if (geometry.userData.editorPrepared) return;
+    const polygonIds = geometry.userData.polygonIds;
+    if (!Array.isArray(polygonIds)) return;
+    const index = geometry.index ? Array.from(geometry.index.array) : Array.from({ length: geometry.attributes.position.count }, (_, i) => i);
+    geometry.userData.originalPolygonIds = polygonIds.slice();
+    geometry.userData.originalIndices = index;
+    geometry.userData.editorPrepared = true;
+  });
+}
+
+function applyDeletedPolygons(root) {
+  root.traverse((mesh) => {
+    if (!mesh.isMesh || !isExtraMesh(mesh, root)) return;
+    const geometry = mesh.geometry;
+    const ids = geometry.userData.originalPolygonIds;
+    const indices = geometry.userData.originalIndices;
+    if (!ids || !indices || indices.length !== ids.length * 3) return;
+    const keptIndices = [];
+    const keptIds = [];
+    for (let face = 0; face < ids.length; face++) {
+      if (state.deleted.has(editKey(root.userData.unit, ids[face]))) continue;
+      keptIds.push(ids[face]);
+      keptIndices.push(indices[face * 3], indices[face * 3 + 1], indices[face * 3 + 2]);
+    }
+    geometry.setIndex(keptIndices);
+    geometry.userData.livePolygonIds = keptIds;
+  });
+}
+
+function refreshDeletedGeometry() {
+  const extra = groups.extra;
+  for (const root of extra.children) applyDeletedPolygons(root);
+  refreshSelectionVisual();
+  updateEditStatus();
+}
+
+function clearSelectionVisual() {
+  for (const object of [...selectionGroup.children]) {
+    selectionGroup.remove(object);
+    object.geometry?.dispose();
+    if (Array.isArray(object.material)) object.material.forEach((m) => m.dispose());
+    else object.material?.dispose();
+  }
+  selectionOverlays.length = 0;
+}
+
+function refreshSelectionVisual() {
+  clearSelectionVisual();
+  scene.updateMatrixWorld(true);
+  for (const selected of selectedPolygons.values()) {
+    for (const root of groups.extra.children) {
+      if (root.userData.unit !== selected.unit) continue;
+      root.traverse((mesh) => {
+        if (!mesh.isMesh || !isExtraMesh(mesh, root)) return;
+        const geometry = mesh.geometry;
+        const ids = geometry.userData.livePolygonIds;
+        const index = geometry.index?.array;
+        const position = geometry.attributes.position;
+        if (!ids || !index || ids.length !== index.length / 3) return;
+        const vertices = [];
+        for (let face = 0; face < ids.length; face++) {
+          if (ids[face] !== selected.polygon) continue;
+          for (let corner = 0; corner < 3; corner++) {
+            const v = new THREE.Vector3().fromBufferAttribute(position, index[face * 3 + corner]).applyMatrix4(mesh.matrixWorld);
+            vertices.push(v.x, v.y, v.z);
+          }
+        }
+        if (!vertices.length) return;
+        const highlightGeometry = new THREE.BufferGeometry();
+        highlightGeometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+        const fill = new THREE.Mesh(highlightGeometry, new THREE.MeshBasicMaterial({
+          color: 0xffe600, transparent: true, opacity: 0.48, side: THREE.DoubleSide,
+          depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+        }));
+        fill.renderOrder = 1000;
+        selectionGroup.add(fill);
+        const edge = new THREE.LineSegments(new THREE.EdgesGeometry(highlightGeometry, 1), new THREE.LineBasicMaterial({ color: 0xffed00 }));
+        edge.renderOrder = 1001;
+        selectionGroup.add(edge);
+      });
+    }
+  }
+}
+
+function updateEditStatus(message) {
+  if (message) { $('editstatus').textContent = message; return; }
+  $('editstatus').textContent = `${selectedPolygons.size} selected · ${state.deleted.size} deleted and saved here. Select only magenta pieces in Extra collision.`;
+}
+
+function updateEditStateForLoadedExtra() {
+  for (const root of groups.extra.children) {
+    preparePolygonIds(root);
+    applyDeletedPolygons(root);
+  }
+  refreshSelectionVisual();
+}
+
+function restyle() {
+  for (const [k, l] of Object.entries(LAYERS)) if (l.collision) styleCollision(groups[k]);
+}
+
+function syncUrl() {
+  const p = new URLSearchParams({ units: state.units, layers: [...state.layers].join(',') });
+  history.replaceState(null, '', '?' + p);
+}
+
+let pending = 0;
+function status() { $('status').textContent = pending ? `loading… ${pending} left` : `${loadedKeys.size} files loaded`; }
+
+function load(frameAfter) {
+  const units = parseUnits(state.units);
+  const want = new Set();
+  for (const layer of state.layers) for (const u of units) want.add(`${layer}:${u}`);
+  // Drop anything no longer wanted to keep memory down.
+  for (const k of Object.keys(groups)) {
+    for (const child of [...groups[k].children]) {
+      if (!want.has(child.name)) {
+        groups[k].remove(child);
+        loadedKeys.delete(child.name);
+        child.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.map?.dispose(); o.material.dispose(); } });
+      }
+    }
+  }
+  refreshSelectionVisual();
+  for (const key of want) {
+    if (loadedKeys.has(key)) continue;
+    loadedKeys.add(key);
+    const [layer, u] = key.split(':');
+    pending++;
+    new GLTFLoader().load(`../../out/${LAYERS[layer].dir}unit${u}/unit${u}.gltf?collisionEditor=1`, (gltf) => {
+      gltf.scene.name = key;
+      gltf.scene.userData = { layer, unit: +u };
+      if (LAYERS[layer].collision) {
+        styleCollision(gltf.scene);
+        if (layer === 'extra') {
+          preparePolygonIds(gltf.scene);
+          applyDeletedPolygons(gltf.scene);
+        }
+      }
+      if (loadedKeys.has(key)) groups[layer].add(gltf.scene);
+      if (layer === 'extra') refreshSelectionVisual();
+      if (--pending === 0 && frameAfter) frame();
+      status();
+    }, undefined, () => { if (--pending === 0 && frameAfter) frame(); status(); });
+  }
+  status();
+  syncUrl();
+}
+
+function frame(top) {
+  const box = new THREE.Box3();
+  for (const g of Object.values(groups)) if (g.children.length) box.expandByObject(g);
+  if (box.isEmpty()) return;
+  const c = box.getCenter(new THREE.Vector3());
+  const r = box.getSize(new THREE.Vector3()).length() * 0.5;
+  const dir = top ? new THREE.Vector3(0, 1, 0.001) : new THREE.Vector3(0.6, 0.55, 0.6);
+  camera.position.copy(c).addScaledVector(dir.normalize(), r * 1.1);
+  controls.target.copy(c);
+  controls.update();
+}
+
+// --- UI ---
+$('units').value = state.units;
+for (const [k, l] of Object.entries(LAYERS)) {
+  const lab = document.createElement('label');
+  lab.innerHTML = `<input type="checkbox" ${state.layers.has(k) ? 'checked' : ''}> ${l.label}`;
+  lab.querySelector('input').onchange = (e) => { e.target.checked ? state.layers.add(k) : state.layers.delete(k); load(false); };
+  $('layers').appendChild(lab);
+}
+SURFACES.forEach((name, id) => {
+  const h = (id * 0.618034) % 1;
+  const col = new THREE.Color().setHSL(h, 0.61, 0.62);
+  const lab = document.createElement('label');
+  lab.innerHTML = `<input type="checkbox" checked><span class="swatch" style="background:#${col.getHexString()}"></span>${id} ${name}`;
+  lab.querySelector('input').onchange = (e) => { e.target.checked ? state.hiddenSurfaces.delete(id) : state.hiddenSurfaces.add(id); restyle(); };
+  $('surfaces').appendChild(lab);
+});
+$('load').onclick = () => { state.units = $('units').value; load(true); };
+$('units').onkeydown = (e) => { if (e.key === 'Enter') $('load').onclick(); };
+$('frame').onclick = () => frame(false);
+$('top').onclick = () => frame(true);
+for (const id of ['opacity', 'wire', 'genonly']) $(id).oninput = restyle;
+
+$('editmode').onchange = () => {
+  if ($('editmode').checked) {
+    state.layers.add('extra');
+    load(false);
+    updateEditStatus('Edit mode: click magenta generated pieces in Extra collision.');
+  } else {
+    selectedPolygons.clear();
+    refreshSelectionVisual();
+    updateEditStatus('Edit mode off.');
+  }
+};
+$('deletePiece').onclick = () => {
+  if (!selectedPolygons.size) { updateEditStatus('Select one or more generated pieces first.'); return; }
+  const batch = [...selectedPolygons.keys()];
+  for (const key of batch) state.deleted.add(key);
+  state.undo.push(batch);
+  selectedPolygons.clear();
+  persistEdits();
+  refreshDeletedGeometry();
+};
+$('undoDelete').onclick = () => {
+  const batch = state.undo.pop();
+  if (!batch) { updateEditStatus('There is no deletion to undo.'); return; }
+  for (const key of batch) state.deleted.delete(key);
+  persistEdits();
+  refreshDeletedGeometry();
+};
+$('clearSelection').onclick = () => {
+  selectedPolygons.clear();
+  refreshSelectionVisual();
+  updateEditStatus('Selection cleared.');
+};
+$('saveEdits').onclick = () => {
+  const edits = [...state.deleted].map((key) => {
+    const [, unit, polygon] = key.split(':');
+    return { source: 'extra', unit: Number(unit), polygon: Number(polygon) };
+  });
+  const blob = new Blob([JSON.stringify({ format: 'paradise-collision-deletions-v1', edits }, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'paradise-collision-edits.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 0);
+  updateEditStatus(`Exported ${edits.length} polygon deletions.`);
+};
+persistEdits();
+updateEditStatus();
+
+// Deletions already saved in the project (tools/edits/collision_edits.json,
+// which the GTA build applies) show as deleted here too, merged with this
+// browser's own; exports then include both.
+fetch('../edits/collision_edits.json', { cache: 'no-store' })
+  .then((r) => (r.ok ? r.json() : null))
+  .then((doc) => {
+    if (!doc || !Array.isArray(doc.edits)) return;
+    let added = 0;
+    for (const e of doc.edits) {
+      if ((e.source || 'extra') !== 'extra') continue;
+      const key = editKey(e.unit, e.polygon);
+      if (!state.deleted.has(key)) { state.deleted.add(key); added++; }
+    }
+    persistEdits();
+    refreshDeletedGeometry();
+    updateEditStatus(`Loaded ${doc.edits.length} deletions from tools/edits/collision_edits.json (${added} new to this browser).`);
+  })
+  .catch(() => {});
+
+// Click to inspect: unit, layer, material/surface and world position.
+const ray = new THREE.Raycaster();
+let downAt = null;
+renderer.domElement.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 4) { downAt = null; return; }
+  downAt = null;
+  if (traffic.handleClick(e)) return;
+  if (water.handleClick(e)) return;
+  if (spawns.handleClick(e)) return;
+  if (sidewalks.handleClick(e)) return;
+  ray.setFromCamera(new THREE.Vector2(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1), camera);
+  const editing = $('editmode').checked;
+  const targets = editing ? [groups.extra] : Object.values(groups);
+  const hit = ray.intersectObjects(targets, true).find((h) => {
+    if (!h.object.visible) return false;
+    if (!editing) return true;
+    let parent = h.object;
+    while (parent && parent.parent && !parent.userData.layer) parent = parent.parent;
+    return isEditableMesh(h.object, parent);
+  });
+  const info = $('info');
+  if (!hit) {
+    info.style.display = 'none';
+    if ($('editmode').checked) updateEditStatus($('editnative').checked ? 'Nothing selectable there: load the Extra collision layer.' : 'Only visible magenta generated pieces in Extra collision can be selected (tick "Include native collision" for the rest).');
+    return;
+  }
+  let root = hit.object; while (root && root.parent && !root.userData.layer) root = root.parent;
+  const p = hit.point, s = surfaceOf(hit.object.material.name);
+  if ($('editmode').checked) {
+    if (!isEditableMesh(hit.object, root)) {
+      updateEditStatus('Only pieces in Extra collision can be selected.');
+      return;
+    }
+    const ids = hit.object.geometry.userData.livePolygonIds || hit.object.geometry.userData.polygonIds;
+    if (!ids || hit.faceIndex == null || ids[hit.faceIndex] == null) {
+      updateEditStatus('This collision preview has no polygon IDs. Reload the collision export with polygon IDs to edit it.');
+      return;
+    }
+    const polygon = ids[hit.faceIndex];
+    const key = editKey(root.userData.unit, polygon);
+    if ($('multiSelect').checked) {
+      if (selectedPolygons.has(key)) selectedPolygons.delete(key);
+      else selectedPolygons.set(key, { source: 'extra', unit: root.userData.unit, polygon });
+    } else {
+      selectedPolygons.clear();
+      selectedPolygons.set(key, { source: 'extra', unit: root.userData.unit, polygon });
+    }
+    refreshSelectionVisual();
+    updateEditStatus();
+    info.textContent = `Selected ${surfaceOf(hit.object.material.name)?.generated ? 'generated' : 'native'} collision · unit ${root.userData.unit} · polygon ${polygon}\nClick more pieces to toggle them, then choose Delete selected.`;
+    info.style.display = 'block';
+    return;
+  }
+  const lines = [
+    `unit ${root.userData.unit}  layer ${root.userData.layer}  object ${hit.object.parent?.name || hit.object.name}`,
+    `material ${hit.object.material.name}` + (s ? `  (surface ${s.id} ${SURFACES[s.id] || '?'}${s.generated ? ', generated' : ''})` : ''),
+    `burnout pos x ${p.x.toFixed(2)}  y ${p.y.toFixed(2)}  z ${p.z.toFixed(2)}   face ${hit.faceIndex}`,
+  ];
+  info.textContent = lines.join('\n');
+  info.style.display = 'block';
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+
+load(true);
+if (params.get('view') === 'top') setTimeout(() => frame(true), 0);
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+# Build output (rebuilt from the games on each PC; never uploaded)
+/target
+/out
+tools/cwconv/bin/
+tools/cwconv/obj/
+# Python caches
+__pycache__/
+*.pyc

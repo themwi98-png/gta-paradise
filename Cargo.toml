@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+anyhow = "1"
+flate2 = "1"
+
+# rerecast with one fix: skip contours that fail to triangulate (as C++
+# Recast does) instead of failing the whole tile. See third_party/rerecast.
+[patch.crates-io]
+rerecast = { path = "third_party/rerecast" }

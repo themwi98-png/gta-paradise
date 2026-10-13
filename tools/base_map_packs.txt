@@ -1,0 +1,9 @@
+# Patch DLC packs (update/x64/dlcpacks) that re-add Los Santos sectors or map
+# additions in story mode (found from OpenIV.log). install_dlc.sh puts a copy of
+# each in the mods folder with those entries stripped from its content.xml.
+patchday1ng
+patchday2ng
+patchday3ng
+patchday26ng
+patchday27ng
+patch2026_01

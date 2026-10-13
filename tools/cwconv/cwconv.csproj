@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Converts CodeWalker XML (e.g. .ybn.xml) to GTA V binary resources using
+       the user's CodeWalker.Core.dll. Set CodeWalkerDir to point elsewhere. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
+    <CodeWalkerDir Condition="'$(CodeWalkerDir)' == ''">$(MSBuildThisFileDirectory)..\..\..\CodeWalker30_dev46</CodeWalkerDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="CodeWalker.Core">
+      <HintPath>$(CodeWalkerDir)\CodeWalker.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="SharpDX">
+      <HintPath>$(CodeWalkerDir)\SharpDX.dll</HintPath>
+    </Reference>
+    <Reference Include="SharpDX.Mathematics">
+      <HintPath>$(CodeWalkerDir)\SharpDX.Mathematics.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+</Project>
