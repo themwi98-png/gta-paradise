@@ -1,4 +1,5 @@
 mod collision;
+mod colsrc;
 mod edits;
 mod export;
 mod gta;
@@ -19,6 +20,7 @@ const USAGE: &str = "usage:
   bpx dump <bundle> <type-hex> [count] [bytes]
   bpx export <game-dir> <out-dir> <unit|all> [unit...]
   bpx overview <game-dir> <out-dir> <unit|all> [unit...]   (low detail, untextured)
+  bpx col-split <stock WORLDCOL.BIN> <combined collision> <out.pcx>
   bpx collision <game-dir|WORLDCOL file> <out-dir> <unit|all> [unit...] [--base <WORLDCOL>]
   bpx surfaces <game-dir> [unit-step]   (report what each collision surface id is)
   bpx materials <game-dir> [unit-step]  (report material texture-slot roles per shader)
@@ -58,6 +60,7 @@ fn main() -> Result<()> {
             let step = args.get(2).map_or(Ok(8), |s| s.parse())?;
             collision::analyse_materials(&PathBuf::from(&args[1]), step)
         }
+        Some("col-split") if args.len() >= 4 => colsrc::split(&PathBuf::from(&args[1]), &PathBuf::from(&args[2]), &PathBuf::from(&args[3])),
         Some("collision") if args.len() >= 4 => {
             let mut rest: Vec<&String> = args[3..].iter().collect();
             let mut base = None;

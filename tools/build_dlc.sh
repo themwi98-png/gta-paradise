@@ -4,7 +4,7 @@
 # teleport list. Never touches the Enhanced install.
 #
 #   tools/build_dlc.sh [collision-file] [placement args for bpx gta-collision...]
-#   e.g. VIS_UNITS=all tools/build_dlc.sh ../WORLDCOL_EXTRA.BIN --offset 0,0,9.9
+#   e.g. VIS_UNITS=all tools/build_dlc.sh tools/collision/paradise_extra.pcx --offset 0,0,9.9
 #   (9.9 puts Paradise's sea at GTA's z 0; see SEA_Z in crates/bpx/src/water.rs)
 #   VIS_UNITS=322,323 (default 322) or VIS_UNITS=all picks the visual units.
 #
@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:/c/Program Files/dotnet:$PATH" DOTNET_NOLOGO=1
 
 GTA="${GTA_DIR:-../Grand Theft Auto V}"
-COL="${1:-../WORLDCOL_EXTRA.BIN}"
+COL="${1:-tools/collision/paradise_extra.pcx}"
 shift || true
 CW="dotnet tools/cwconv/bin/Release/net8.0-windows/cwconv.dll"
 
@@ -37,7 +37,7 @@ $CW convert out/gta_vis_xml out/gta_vis
 ./target/release/bpx gta-cargens "${GAME_DIR:-../Burnout Paradise Remastered}" out/gta_meta_xml "$@"
 # Burnout's props (lamp posts, traffic lights, bins...) as GTA props.
 [ -f out/props/gta_archetypes.csv ] || { mkdir -p out/props; dotnet tools/cwconv/bin/Release/net8.0-windows/cwconv.dll archetypes "${GTA_DIR:-../Grand Theft Auto V}" "x64*.rpf" "levels/gta5/props/" out/props/gta_archetypes.csv; }
-./target/release/bpx gta-props "${GAME_DIR:-../Burnout Paradise Remastered}" out/gta_meta_xml "$@" --col "${PROPS_COL:-../WORLDCOL_EXTRA.BIN}"
+./target/release/bpx gta-props "${GAME_DIR:-../Burnout Paradise Remastered}" out/gta_meta_xml "$@" --col "${PROPS_COL:-tools/collision/paradise_extra.pcx}"
 $CW convert out/gta_meta_xml out/gta_meta
 $CW pack bpparadise out/dlc out/gta_col bpparadise_vis=out/gta_vis bpparadise_metadata=out/gta_meta:meta
 

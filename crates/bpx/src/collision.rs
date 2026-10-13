@@ -179,12 +179,9 @@ fn poly_key(p: &bw::CollisionPoly) -> Vec<i32> {
 }
 
 fn load_poly_keys(path: &Path) -> Result<HashMap<u32, HashSet<Vec<i32>>>> {
-    let b = Bundle::open(path)?;
     let mut out: HashMap<u32, HashSet<Vec<i32>>> = HashMap::new();
-    for e in b.entries.iter().filter(|e| e.type_id == types::POLYGON_SOUP_LIST) {
-        let Some(unit) = bw::collision_unit(&b, e.id) else { continue };
-        let set = out.entry(unit).or_default();
-        set.extend(bw::parse_polygon_soup_list(&Res::load(&b, e)?).polys.iter().map(poly_key));
+    for (unit, polys) in crate::colsrc::load(path)? {
+        out.entry(unit).or_default().extend(polys.iter().map(poly_key));
     }
     Ok(out)
 }
@@ -196,8 +193,7 @@ fn load_poly_keys(path: &Path) -> Result<HashMap<u32, HashSet<Vec<i32>>>> {
 /// base are put in separate `gen_*` materials, highlighted magenta, so added
 /// or auto-generated collision can be reviewed on its own.
 pub fn export(col: &Path, out: &Path, units: Option<&[u32]>, base: Option<&Path>) -> Result<()> {
-    let col = if col.is_dir() { col.join("WORLDCOL.BIN") } else { col.to_path_buf() };
-    let b = Bundle::open(&col)?;
+    let all_units = crate::colsrc::load(col)?;
     let base_polys = base.map(load_poly_keys).transpose()?;
     let mut generated = 0usize;
     let mut surface_totals: BTreeMap<u8, usize> = BTreeMap::new();
@@ -206,18 +202,21 @@ pub fn export(col: &Path, out: &Path, units: Option<&[u32]>, base: Option<&Path>
     let mut total_polys = 0usize;
     let mut out_of_box = 0usize;
 
-    for e in b.entries.iter().filter(|e| e.type_id == types::POLYGON_SOUP_LIST) {
-        let Some(unit) = bw::collision_unit(&b, e.id) else {
-            continue;
-        };
+    for (unit, polys) in all_units {
         let name = format!("TRK_COL_{unit}");
         let name = name.as_str();
         if units.is_some_and(|u| !u.contains(&unit)) {
             continue;
         }
-        let mesh = bw::parse_polygon_soup_list(&Res::load(&b, e)?);
-        if mesh.polys.is_empty() {
+        if polys.is_empty() {
             continue;
+        }
+        let mut mesh = bw::CollisionMesh { aabb_min: [f32::MAX; 3], aabb_max: [f32::MIN; 3], polys };
+        for v in mesh.polys.iter().flat_map(|p| &p.verts) {
+            for k in 0..3 {
+                mesh.aabb_min[k] = mesh.aabb_min[k].min(v[k]);
+                mesh.aabb_max[k] = mesh.aabb_max[k].max(v[k]);
+            }
         }
 
         // Sanity checks: decoded vertices should sit inside the stored AABB,
@@ -305,7 +304,8 @@ pub fn export(col: &Path, out: &Path, units: Option<&[u32]>, base: Option<&Path>
     }
     println!("flags (count): {flag_totals:x?}");
     if std::env::var_os("BPX_TAG_DEBUG").is_some() {
-        tag_debug(&b)?;
+        let col = if col.is_dir() { col.join("WORLDCOL.BIN") } else { col.to_path_buf() };
+        tag_debug(&Bundle::open(&col)?)?;
     }
     println!("surface ids (count):");
     for (sid, n) in surface_totals {

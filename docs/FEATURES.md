@@ -28,7 +28,7 @@ Last updated: 2026-10-12
 | Feature | Status | Notes |
 |---|---|---|
 | Paradise City buildings, roads and scenery (models + textures) | ✅ | Every Burnout map section converted to GTA models and map files (`bpx gta-visual`). |
-| Collision (drive / walk on everything) | ✅ | From `WORLDCOL_EXTRA.BIN` (Burnout's collision plus extra generated pieces), repaired for GTA. |
+| Collision (drive / walk on everything) | ✅ | Burnout's own collision (the player's `WORLDCOL.BIN`) plus about 441,000 added out-of-bounds pieces, kept separately in `tools/collision/paradise_extra.pcx` (only the added pieces, so no Burnout data is shared), repaired for GTA. `bpx col-split` makes the `.pcx` from a combined collision file. |
 | Hand-made collision fixes | ✅ | 654 pieces deleted with the viewer's collision editor (`tools/edits/collision_edits.json`). |
 | Los Santos removed | ✅ | Base map, Rockstar's patch packs, scenario points and stray grass all removed. |
 | Map height | ✅ | Placed with `--offset 0,0,9.9` so Paradise's sea sits at GTA's sea level. |

@@ -306,11 +306,10 @@ const FLOOR_CELL: f32 = 8.0;
 
 impl Floors {
     pub(crate) fn load(col: &Path, placement: &Placement) -> Result<Self> {
-        let b = Bundle::open(col)?;
         let edits = crate::edits::CollisionEdits::load()?;
         let mut cells: HashMap<(i32, i32), Vec<[[f32; 3]; 3]>> = HashMap::new();
-        for e in b.entries.iter().filter(|e| e.type_id == bpworld::types::POLYGON_SOUP_LIST) {
-            for p in edits.polys(&b, e)? {
+        for (unit, polys) in crate::colsrc::load(col)? {
+            for p in edits.polys(unit, polys) {
                 if bpworld::CollisionTag::decode(p.tag).surface_id == bpworld::SURFACE_INVISIBLE_WALL {
                     continue;
                 }

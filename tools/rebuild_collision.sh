@@ -5,12 +5,12 @@
 # not rebuilt (tools/build_dlc.sh does everything).
 #
 #   tools/rebuild_collision.sh [collision-file] [placement args...]
-#   e.g. tools/rebuild_collision.sh ../WORLDCOL_EXTRA.BIN --offset 0,0,9.9
+#   e.g. tools/rebuild_collision.sh tools/collision/paradise_extra.pcx --offset 0,0,9.9
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:/c/Program Files/dotnet:$PATH" DOTNET_NOLOGO=1
 
-COL="${1:-../WORLDCOL_EXTRA.BIN}"
+COL="${1:-tools/collision/paradise_extra.pcx}"
 shift || true
 [ $# -gt 0 ] || set -- --offset 0,0,9.9
 CW="dotnet tools/cwconv/bin/Release/net8.0-windows/cwconv.dll"

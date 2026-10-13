@@ -146,6 +146,7 @@ dependencies = [
  "anyhow",
  "bnd2",
  "bpworld",
+ "flate2",
  "glam",
  "png",
  "rayon",

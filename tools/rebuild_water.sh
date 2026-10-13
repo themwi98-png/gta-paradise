@@ -8,7 +8,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
 
-COL="${1:-../WORLDCOL_EXTRA.BIN}"
+COL="${1:-tools/collision/paradise_extra.pcx}"
 shift || true
 [ $# -gt 0 ] || set -- --offset 0,0,9.9
 

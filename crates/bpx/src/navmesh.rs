@@ -16,8 +16,7 @@
 
 use crate::gta::Placement;
 use anyhow::Result;
-use bnd2::Bundle;
-use bpworld::{self as bw, types, CollisionTag};
+use bpworld::{self as bw, CollisionTag};
 use glam::{UVec3, Vec3, Vec3A};
 use rayon::prelude::*;
 use rerecast::{Aabb3d, AreaType, BuildContoursFlags, ConvexVolume, HeightfieldBuilder, PolygonNavmesh, TriMesh};
@@ -106,11 +105,10 @@ struct Source {
 }
 
 fn load_source(col: &Path, placement: Placement, margin: f32) -> Result<Source> {
-    let b = Bundle::open(col)?;
     let mut tris = Vec::new();
     let edits = crate::edits::CollisionEdits::load()?;
-    for e in b.entries.iter().filter(|e| e.type_id == types::POLYGON_SOUP_LIST) {
-        for p in edits.polys(&b, e)? {
+    for (unit, polys) in crate::colsrc::load(col)? {
+        for p in edits.polys(unit, polys) {
             let tag = CollisionTag::decode(p.tag);
             let v: Vec<[f32; 3]> = p.verts.iter().map(|&v| placement.apply(v)).collect();
             // Water collision is the sea / lake bed: solid but not walkable.

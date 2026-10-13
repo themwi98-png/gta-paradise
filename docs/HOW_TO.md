@@ -144,4 +144,4 @@ in the GTA folder; tell Claude the mark number and what's wrong.
 |---|---|
 | `bash gta-paradise/tools/install_dlc.sh` | Re-installs everything already built (plugin, settings, spawn zones…) |
 | `bash gta-paradise/tools/build_crash.sh` | Rebuilds car handling (damage, speed, grip) |
-| `VIS_UNITS=all bash gta-paradise/tools/build_dlc.sh ../WORLDCOL_EXTRA.BIN --offset 0,0,9.9` | Rebuilds everything (slow) |
+| `VIS_UNITS=all bash gta-paradise/tools/build_dlc.sh tools/collision/paradise_extra.pcx --offset 0,0,9.9` | Rebuilds everything (slow) |

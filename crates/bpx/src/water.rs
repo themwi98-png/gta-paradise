@@ -29,8 +29,7 @@
 
 use crate::gta::Placement;
 use anyhow::{Context, Result};
-use bnd2::Bundle;
-use bpworld::{self as bw, types, CollisionTag};
+use bpworld::{self as bw, CollisionTag};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -205,8 +204,7 @@ fn quad_xml(out: &mut String, [min_x, max_x, min_y, max_y]: [f32; 4], z: f32) {
 }
 
 pub fn generate(col: &Path, gta_water: &Path, out: &Path, placement: Placement, lakes: Option<&Path>) -> Result<()> {
-    let col = if col.is_dir() { col.join("WORLDCOL.BIN") } else { col.to_path_buf() };
-    let b = Bundle::open(&col)?;
+    let units = crate::colsrc::load(col)?;
     let base = std::fs::read_to_string(gta_water).with_context(|| format!("reading {}", gta_water.display()))?;
 
     // Placed floor triangles (water surfaces, which are Burnout's seabed, and
@@ -215,8 +213,8 @@ pub fn generate(col: &Path, gta_water: &Path, out: &Path, placement: Placement, 
     let mut water_tris: Vec<[[f32; 3]; 3]> = Vec::new();
     let (mut lo, mut hi) = (WORLD_MIN, WORLD_MAX);
     let edits = crate::edits::CollisionEdits::load()?;
-    for e in b.entries.iter().filter(|e| e.type_id == types::POLYGON_SOUP_LIST) {
-        for p in edits.polys(&b, e)? {
+    for (unit, polys) in units {
+        for p in edits.polys(unit, polys) {
             let tag = CollisionTag::decode(p.tag);
             if tag.surface_id == bw::SURFACE_INVISIBLE_WALL {
                 continue;

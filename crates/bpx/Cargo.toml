@@ -9,6 +9,7 @@ description = "Burnout Paradise extractor CLI"
 anyhow.workspace = true
 bnd2 = { path = "../bnd2" }
 bpworld = { version = "0.1.0", path = "../bpworld" }
+flate2.workspace = true
 glam = "0.32"
 png = "0.18.1"
 rayon = "1.12.0"

@@ -5,8 +5,7 @@
 
 use crate::repair;
 use anyhow::Result;
-use bnd2::Bundle;
-use bpworld::{self as bw, types, CollisionTag};
+use bpworld::{self as bw, CollisionTag};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -194,27 +193,19 @@ fn write_ybn_xml(children: &[Child]) -> String {
 }
 
 pub fn export_collision(col: &Path, out: &Path, opts: &Options) -> Result<()> {
-    let col = if col.is_dir() { col.join("WORLDCOL.BIN") } else { col.to_path_buf() };
-    let b = Bundle::open(&col)?;
+    let units = crate::colsrc::load(col)?;
     std::fs::create_dir_all(out)?;
     let mut manifest = Vec::new();
     let mut skipped: BTreeMap<&str, usize> = BTreeMap::new();
     let (mut files, mut tris_total) = (0usize, 0usize);
 
-    let mut entries: Vec<(u32, &bnd2::Entry)> = b
-        .entries
-        .iter()
-        .filter(|e| e.type_id == types::POLYGON_SOUP_LIST)
-        .filter_map(|e| Some((bw::collision_unit(&b, e.id)?, e)))
-        .collect();
-    entries.sort_by_key(|e| e.0);
 
     let edits = crate::edits::CollisionEdits::load()?;
     let mut facing = Facing::default();
     let mut repair_stats = repair::Stats::default();
     let mut overlay = Overlay::default();
-    for (unit, e) in entries {
-        let polys = edits.polys(&b, e)?;
+    for (unit, polys) in units {
+        let polys = edits.polys(unit, polys);
         // Gather the unit's triangles into one welded vertex pool, so seams
         // between Burnout's separate polygon soups can be repaired.
         let mut pool = repair::Pool::new(WELD_TOLERANCE);

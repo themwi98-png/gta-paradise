@@ -22,9 +22,8 @@
 //! BPX_WATER_EDITS) and applied by `bpx gta-water`.
 
 use anyhow::{Context, Result};
-use bnd2::{Bundle, Entry};
 use bpworld::traffic::{Section, StaticVehicle, Traffic};
-use bpworld::{self as bw, Res};
+use bpworld as bw;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -59,13 +58,11 @@ impl CollisionEdits {
     }
 
     /// A unit's collision polygons with the deleted ones removed.
-    pub fn polys(&self, b: &Bundle, e: &Entry) -> Result<Vec<bw::CollisionPoly>> {
-        let mesh = bw::parse_polygon_soup_list(&Res::load(b, e)?);
+    pub fn polys(&self, unit: u32, polys: Vec<bw::CollisionPoly>) -> Vec<bw::CollisionPoly> {
         if self.deleted.is_empty() {
-            return Ok(mesh.polys);
+            return polys;
         }
-        let Some(unit) = bw::collision_unit(b, e.id) else { return Ok(mesh.polys) };
-        Ok(mesh.polys.into_iter().enumerate().filter(|(i, _)| !self.deleted.contains(&(unit, *i as u32))).map(|(_, p)| p).collect())
+        polys.into_iter().enumerate().filter(|(i, _)| !self.deleted.contains(&(unit, *i as u32))).map(|(_, p)| p).collect()
     }
 }
 
@@ -78,7 +75,7 @@ const DRAPE_STEP: f32 = 6.0;
 /// From one step to the next the road rises or falls at most this much (m).
 const DRAPE_CLIMB: f32 = 2.5;
 /// Collision the drawn lanes are laid on (BPX_COL overrides).
-const DEFAULT_COL: &str = "../WORLDCOL_EXTRA.BIN";
+const DEFAULT_COL: &str = "tools/collision/paradise_extra.pcx";
 
 /// Lays a drawn lane on the road surface: long straight bits are split into
 /// DRAPE_STEP steps and each step takes the collision floor nearest the
