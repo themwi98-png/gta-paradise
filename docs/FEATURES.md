@@ -64,7 +64,7 @@ Last updated: 2026-10-12
 | Much more crash damage on all cars | ✅ | All 791 vehicles (base game + DLC): dents 6×, body damage 4×, engine damage 3× (`HANDLING` in `crates/bpx/src/gtadata.rs`). |
 | Faster cars | ✅ | Top speed 1.35×, engine power 1.5×, brakes 1.25×. |
 | More grip | ✅ | Cornering and sliding grip 1.4× (was 1.2×), wheelspin cut to 0.6×. |
-| Heavier jumps | ✅ | Cars in the air fall at 3× gravity (`@air_gravity`). |
+| Heavier jumps | ✅ | Cars in the air fall at 2× gravity (`@air_gravity`). |
 | Downforce | ✅ | Fast cars on the ground are pressed down harder, growing with speed squared: +1 g at ~180 km/h, at most +3 g (`@downforce`). |
 | Extra dents and smashed glass on hard hits | ✅ | From about 40 km/h of sudden speed loss (`@impact_speed`). |
 | **Wrecks** | ✅ | Hard crash (≈65 km/h sudden speed loss, `@wreck_speed`): car crumpled all round, glass and panels gone, explodes, 5 s slow-motion crash cam with "WRECKED", then you respawn on the nearest road in a fresh copy of the same car (colours, upgrades, plate), already rolling. No penalty. |
@@ -167,7 +167,7 @@ script overwrites it with the project's copy.
 | `@wreck_crush`, `@wreck_crush_rounds` | 8000, 8 | How mangled wrecked cars get |
 | `@wreck_clear` | 6 | Radius (m) cleared of NPCs, vehicles and fires after a wreck (0 = off) |
 | `@police_power`, `@police_top` | 2, 50 | Pursuing police engine power, extra top speed % |
-| `@air_gravity` | 3 | Gravity on cars in the air |
+| `@air_gravity` | 2 | Gravity on cars in the air |
 | `@downforce` | 1 | Extra g on fast cars at ~180 km/h |
 | `@boost` | on | Boost |
 | `@boost_accel` | 9 | Boost acceleration (m/s²) |
