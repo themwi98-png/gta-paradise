@@ -1,5 +1,7 @@
 # GTA Paradise
 
+[Download](../../releases) (detailed installation instructions below)
+
 ## Video:
 [![Watch the video](https://img.youtube.com/vi/2o_EHrRY4cg/maxresdefault.jpg)](https://www.youtube.com/watch?v=2o_EHrRY4cg)
 
