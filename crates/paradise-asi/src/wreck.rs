@@ -19,8 +19,18 @@
 //! brings normal speed back.
 //!
 //! A car that is finished in other ways is wrecked too (`@wreck_damage`): on
-//! fire, engine dead, no longer drivable, stuck on its roof, or not moving
-//! with the accelerator held (wheels jammed) for `@wreck_stuck` seconds.
+//! fire, engine dead, no longer drivable, or not moving with the accelerator
+//! held (wheels jammed) for `@wreck_stuck` seconds.
+//!
+//! As in Burnout, damage that changes how the car drives is a wreck too;
+//! only looks may be smashed up. A wheel knocked out of line (axle bent,
+//! wheel pushed in or torn off, so the car pulls or won't steer) by more than
+//! `@wreck_wheel` cm, or an engine damaged below `@wreck_engine` health
+//! (smoking, down on power). To make that rarer the player's axles are
+//! strong (`@strong_axles`): knocks don't bend them, only a crash that
+//! crushes the body in around a wheel moves it. The dents added after a hit
+//! (below) never move a wheel; only the crash itself does. The player's
+//! tyres can't burst at all (`@strong_tyres`).
 //!
 //! Knocking over a prop (lamp post, bin, sign...) is not a crash: the car
 //! keeps `@prop_keep` of its speed and the hit costs it no health (the prop
@@ -40,7 +50,7 @@ use std::collections::VecDeque;
 #[derive(Clone, Copy)]
 pub struct WreckSettings {
     pub enabled: bool,
-    /// Sudden change in speed (m/s) for a wreck; 18 m/s is about 65 km/h.
+    /// Sudden change in speed (m/s) for a wreck; 25 m/s is about 90 km/h.
     pub wreck_dv: f32,
     /// Sudden change in speed (m/s) for extra crash damage.
     pub impact_dv: f32,
@@ -68,14 +78,111 @@ pub struct WreckSettings {
     pub precrash: bool,
     /// How far ahead (game seconds) a wreck is predicted.
     pub precrash_lead: f32,
+    /// A hit at least this hard (sudden speed change, m/s) shows the
+    /// slow-motion crash camera from the moment of impact; one that isn't a
+    /// wreck ends with DRIVEAWAY.
+    pub crash_cam_dv: f32,
+    /// How long that camera stays (real seconds) when it isn't a wreck.
+    pub crash_cam_hold: f32,
+    /// How much colour drains out of the picture on a wreck (0 = none,
+    /// 1 = black and white).
+    pub desat: f32,
     /// NPCs and vehicles this close (m) to the wreck are removed before the
     /// respawn (0: off).
     pub clear_radius: f32,
+    /// A wheel knocked this far out of line (m, across or along the car)
+    /// wrecks it (0: off).
+    pub wheel_shift: f32,
+    /// The player's tyres can't burst.
+    pub strong_tyres: bool,
+    /// Engine health under this wrecks the car (GTA: 1000 new, smoking and
+    /// losing power under about 400).
+    pub engine_wreck: f32,
+    /// The player's car has strong axles (knocks don't bend them).
+    pub strong_axles: bool,
 }
 
 impl Default for WreckSettings {
     fn default() -> Self {
-        Self { enabled: true, wreck_dv: 18.0, impact_dv: 11.0, explode: true, respawn_speed: 12.0, crash_time: 5.0, slowmo: 0.15, crash_cam: true, crush: 8000.0, crush_rounds: 8, damage_wreck: true, stuck_time: 2.5, prop_keep: 0.9, precrash: true, precrash_lead: 0.12, clear_radius: 6.0 }
+        Self { enabled: true, wreck_dv: 25.0, impact_dv: 11.0, explode: true, respawn_speed: 12.0, crash_time: 5.0, slowmo: 0.15, crash_cam: true, crush: 8000.0, crush_rounds: 8, damage_wreck: true, stuck_time: 2.5, prop_keep: 1.0, precrash: true, precrash_lead: 0.12, crash_cam_dv: 20.0, crash_cam_hold: 1.5, clear_radius: 6.0, desat: 0.6, wheel_shift: 0.0, strong_tyres: true, engine_wreck: 100.0, strong_axles: true }
+    }
+}
+
+/// Wheel bones.
+const WHEELS: [&str; 6] = ["wheel_lf", "wheel_rf", "wheel_lm1", "wheel_rm1", "wheel_lr", "wheel_rr"];
+
+/// INPUT_VEH_MOVE_LR (steering).
+const CONTROL_STEER: i32 = 59;
+/// Steering and suspension travel move a wheel's hub several cm on their
+/// own, so wheels are only measured while the car is steady: on all four
+/// wheels with the steering centred for this long (s)...
+const WHEEL_STEADY: f32 = 0.4;
+/// ...and a wheel must stay out of line for this much steady time (s).
+const WHEEL_PERSIST: f32 = 1.0;
+
+/// Where a car's wheels sat when the player got it, to tell when one has
+/// been knocked out of line.
+#[derive(Default)]
+struct Wheels {
+    vehicle: i32,
+    /// Wheel name, bone and resting place in car space (x right, y forward);
+    /// taken the first time the car is steady.
+    rest: Vec<(&'static str, i32, f32, f32)>,
+    measured: bool,
+    /// Since when the car has been steady.
+    steady_since: Option<std::time::Instant>,
+    /// Steady time (s) a wheel has been out of line without a break.
+    out_for: f32,
+    /// The worst shift logged so far (m), so the log shows it growing.
+    logged: f32,
+}
+
+fn hub(veh: i32, bone: i32) -> Vec3 {
+    n::get_offset_from_entity_given_world_coords(veh, n::get_world_position_of_entity_bone(veh, bone))
+}
+
+impl Wheels {
+    /// Starts watching a car.
+    fn watch(&mut self, veh: i32) {
+        if self.vehicle != veh {
+            *self = Self { vehicle: veh, ..Default::default() };
+        }
+    }
+
+    /// The wheel furthest out of line now and how far (m, across or along
+    /// the car; up and down is the suspension), if the car is steady enough
+    /// to tell.
+    fn shift(&mut self, veh: i32) -> Option<(&'static str, f32)> {
+        if !n::is_vehicle_on_all_wheels(veh) || n::get_control_normal(CONTROL_STEER).abs() > 0.1 {
+            self.steady_since = None;
+            return None;
+        }
+        if self.steady_since.get_or_insert_with(std::time::Instant::now).elapsed().as_secs_f32() < WHEEL_STEADY {
+            return None;
+        }
+        if !self.measured {
+            self.measured = true;
+            self.rest = WHEELS
+                .iter()
+                .filter_map(|&name| {
+                    let bone = n::get_entity_bone_index_by_name(veh, name);
+                    (bone >= 0).then(|| {
+                        let p = hub(veh, bone);
+                        (name, bone, p.x, p.y)
+                    })
+                })
+                .collect();
+            return None;
+        }
+        let mut worst = ("", 0.0);
+        for &(name, bone, x, y) in &self.rest {
+            let p = hub(veh, bone);
+            let d = len_h(p.x - x, p.y - y);
+            if d > worst.1 {
+                worst = (name, d);
+            }
+        }
+        Some(worst)
     }
 }
 
@@ -107,6 +214,9 @@ const PRE_CLEAR: f32 = 0.4;
 struct PreCrash {
     start: std::time::Instant,
     cam: CrashCam,
+    /// Started at an impact (the crash camera for any hard hit) rather than
+    /// ahead of a predicted wreck.
+    impact: bool,
     /// Since when the path ahead has been clear, if it is.
     clear_since: Option<std::time::Instant>,
 }
@@ -125,6 +235,12 @@ pub struct Wreck {
     /// "DRIVEAWAY" is on screen since then (a predicted wreck that didn't
     /// happen).
     driveaway: Option<std::time::Instant>,
+    /// The big-message movie for the WRECKED screen (0: not requested yet).
+    big_message: i32,
+    /// Where the car's wheels should be.
+    wheels: Wheels,
+    /// When the car was last airborne (game ms).
+    last_air: i32,
 }
 
 /// How long (real seconds) "DRIVEAWAY" stays on screen.
@@ -134,8 +250,9 @@ pub enum Event {
     None,
     Impact(f32),
     Wrecked { dv: f32 },
-    /// Wrecked by damage (fire, dead engine, jammed...), with the reason.
-    Finished(&'static str),
+    /// Wrecked by damage (fire, dead engine, wheel out of line, jammed...),
+    /// with the reason.
+    Finished(String),
     /// Knocked over a prop; speed and health given back.
     Prop(f32),
 }
@@ -204,18 +321,40 @@ impl Wreck {
     }
 
     /// Why the car is finished without a big crash, if it is.
-    fn finished(&mut self, s: &WreckSettings, veh: i32, now: i32) -> Option<&'static str> {
+    fn finished(&mut self, s: &WreckSettings, veh: i32, now: i32) -> Option<String> {
         if !s.damage_wreck {
             return None;
         }
         if n::is_entity_on_fire(veh) {
-            return Some("on fire");
+            return Some("on fire".into());
         }
-        if n::get_vehicle_engine_health(veh) < 0.0 {
-            return Some("engine destroyed");
+        let engine = n::get_vehicle_engine_health(veh);
+        if engine < 0.0 {
+            return Some("engine destroyed".into());
         }
         if !n::is_vehicle_driveable(veh) {
-            return Some("undrivable");
+            return Some("undrivable".into());
+        }
+        // Damage that changes how it drives (Burnout: only looks may be
+        // smashed up).
+        if engine < s.engine_wreck {
+            return Some(format!("engine damaged, health {engine:.0}"));
+        }
+        if let Some((w, shift)) = self.wheels.shift(veh) {
+            if s.wheel_shift > 0.0 && shift > s.wheel_shift {
+                self.wheels.out_for += n::get_frame_time();
+                if self.wheels.out_for >= WHEEL_PERSIST {
+                    return Some(format!("{w} {:.0} cm out of line", shift * 100.0));
+                }
+            } else {
+                self.wheels.out_for = 0.0;
+            }
+            // For tuning @wreck_wheel: how far wheels get knocked without a
+            // wreck.
+            if shift >= self.wheels.logged + 0.01 {
+                self.wheels.logged = shift;
+                crate::log(&format!("{w} {:.1} cm out of line (wrecks over {:.0})", shift * 100.0, s.wheel_shift * 100.0));
+            }
         }
         // Wheels down, accelerator held, going nowhere. Upside down or on its
         // side doesn't count: GTA lets the driver roll the car back over.
@@ -223,7 +362,7 @@ impl Wreck {
         if jammed {
             let since = *self.stuck_since.get_or_insert(now);
             if now - since >= (s.stuck_time * 1000.0) as i32 {
-                return Some("jammed");
+                return Some("jammed".into());
             }
         } else {
             self.stuck_since = None;
@@ -235,6 +374,9 @@ impl Wreck {
     /// with the slow-motion crash camera starting just before a predicted
     /// one.
     pub fn update(&mut self, s: &WreckSettings, ped: i32, now: i32, props: &mut crate::propshield::PropShield) -> Event {
+        if self.big_message == 0 {
+            self.big_message = n::request_scaleform_movie(BIG_MESSAGE);
+        }
         let event = self.check(s, ped, now, props);
         if let Some(t) = self.driveaway {
             if t.elapsed().as_secs_f32() < DRIVEAWAY_TIME && !matches!(event, Event::Wrecked { .. } | Event::Finished(_)) {
@@ -247,6 +389,18 @@ impl Wreck {
             Event::None => {
                 if self.vehicle == 0 {
                     self.cancel_pre();
+                } else if self.pre.as_ref().is_some_and(|p| p.impact) {
+                    // The crash camera after a hard hit: held for a moment,
+                    // then back to driving (it wasn't a wreck).
+                    let pre = self.pre.as_mut().unwrap();
+                    let t = pre.start.elapsed().as_secs_f32();
+                    if t > s.crash_cam_hold {
+                        self.cancel_pre();
+                        self.driveaway = Some(std::time::Instant::now());
+                    } else {
+                        n::set_time_scale(s.slowmo);
+                        pre.cam.update(self.vehicle, t);
+                    }
                 } else if self.pre.is_some() {
                     // Keep the run-up going until the impact; give up if it
                     // doesn't come, or the driver steers clear.
@@ -270,14 +424,37 @@ impl Wreck {
                     let v = n::get_entity_velocity(self.vehicle);
                     n::set_time_scale(s.slowmo);
                     let cam = CrashCam::new(s.crash_cam, self.vehicle, heading_of(v.x, v.y));
-                    self.pre = Some(PreCrash { start: std::time::Instant::now(), cam, clear_since: None });
+                    self.pre = Some(PreCrash { start: std::time::Instant::now(), cam, impact: false, clear_since: None });
                 }
             }
-            // Hit something after all, but not hard enough: back to normal.
-            Event::Prop(_) | Event::Impact(_) => {
-                if self.pre.is_some() {
+            // A prop: never a crash. Ends a wreck run-up that didn't come.
+            Event::Prop(_) => {
+                if self.pre.as_ref().is_some_and(|p| !p.impact) {
                     self.cancel_pre();
                     self.driveaway = Some(std::time::Instant::now());
+                }
+            }
+            // A hit, but not a wreck: the crash camera from the impact (it
+            // carries on from a wreck run-up's camera), then DRIVEAWAY.
+            Event::Impact(dv) => {
+                let hard = s.crash_cam && dv >= s.crash_cam_dv;
+                match self.pre.as_mut() {
+                    Some(p) if hard => {
+                        p.impact = true;
+                        p.start = std::time::Instant::now();
+                    }
+                    Some(p) if !p.impact => {
+                        self.cancel_pre();
+                        self.driveaway = Some(std::time::Instant::now());
+                    }
+                    Some(_) => {}
+                    None if hard => {
+                        let v = n::get_entity_velocity(self.vehicle);
+                        n::set_time_scale(s.slowmo);
+                        let cam = CrashCam::new(s.crash_cam, self.vehicle, heading_of(v.x, v.y));
+                        self.pre = Some(PreCrash { start: std::time::Instant::now(), cam, impact: true, clear_since: None });
+                    }
+                    None => {}
                 }
             }
             _ => {}
@@ -305,6 +482,9 @@ impl Wreck {
             self.reset();
             self.vehicle = veh;
         }
+        self.wheels.watch(veh);
+        n::set_vehicle_has_strong_axles(veh, s.strong_axles);
+        n::set_vehicle_tyres_can_burst(veh, !s.strong_tyres);
         // Damage wrecks only count while the prop shield isn't holding the
         // car's health (props must never wreck it).
         if props.shielding() {
@@ -318,6 +498,9 @@ impl Wreck {
             return Event::Finished(why);
         }
         let v = n::get_entity_velocity(veh);
+        if n::is_entity_in_air(veh) {
+            self.last_air = now;
+        }
         self.history.push_back((now, v));
         while self.history.len() > 2 && now - self.history[1].0 >= WINDOW_MS {
             self.history.pop_front();
@@ -359,7 +542,7 @@ impl Wreck {
             self.history.clear();
             return Event::Prop(dv);
         }
-        if dv < s.impact_dv {
+        if dv < s.impact_dv.min(if s.crash_cam { s.crash_cam_dv } else { f32::MAX }) {
             return Event::None;
         }
         self.last_impact = now;
@@ -370,12 +553,27 @@ impl Wreck {
         let (rx, ry) = (fy, -fx);
         let (hx, hy) = (-dx / dv, -dy / dv);
         let local = (hx * rx + hy * ry, hx * fx + hy * fy);
-        let severity = ((dv - s.impact_dv) / (s.wreck_dv - s.impact_dv).max(1.0)).clamp(0.0, 1.0);
-        dent(veh, local, 400.0 + 1600.0 * severity, 3 + (severity * 4.0) as i32);
-        if severity > 0.5 {
-            smash_side(veh, local);
+        if dv >= s.impact_dv {
+            let severity = ((dv - s.impact_dv) / (s.wreck_dv - s.impact_dv).max(1.0)).clamp(0.0, 1.0);
+            dent(veh, local, 400.0 + 1600.0 * severity, 3 + (severity * 4.0) as i32);
+            if severity > 0.5 {
+                smash_side(veh, local);
+            }
         }
         if dv >= s.wreck_dv {
+            // What it was, for the log.
+            let what = if crate::propshield::touching_vehicle(veh) { "against a vehicle" } else { "not touching a vehicle" };
+            let air = if now - self.last_air < 500 { format!(", landing ({} ms after being airborne)", now - self.last_air) } else { String::new() };
+            crate::log(&format!(
+                "wreck hit: {:.0} -> {:.0} km/h in {} ms, height speed {:.1} -> {:.1} m/s, {what}{air}, struck side x {:.2} y {:.2}",
+                len_h(v0.x, v0.y) * 3.6,
+                len_h(v.x, v.y) * 3.6,
+                now - t0,
+                v0.z,
+                v.z,
+                local.0,
+                local.1
+            ));
             let travel = heading_of(v0.x, v0.y);
             let pre = self.pre.take();
             self.run_wreck(s, ped, veh, local, travel, len_h(v0.x, v0.y), pre);
@@ -413,6 +611,7 @@ impl Wreck {
         for d in 0..6 {
             n::set_vehicle_door_broken(veh, d, false);
         }
+        n::set_vehicle_tyres_can_burst(veh, true);
         for t in [0, 1, 4, 5] {
             n::set_vehicle_tyre_burst(veh, t);
         }
@@ -427,6 +626,7 @@ impl Wreck {
         let mut involved = Involved::default();
         involved.near(ped, veh, crash_pos, INVOLVED_RADIUS);
         // The camera of the slow-motion run-up carries on, if there was one.
+        let mut banner = Banner::new("WRECKED", self.big_message, s.desat);
         let (mut cam, cam_start) = match pre {
             Some(p) => (p.cam, p.start),
             None => (CrashCam::new(s.crash_cam, veh, travel), std::time::Instant::now()),
@@ -450,7 +650,7 @@ impl Wreck {
             }
             n::set_time_scale(s.slowmo);
             cam.update(veh, cam_start.elapsed().as_secs_f32());
-            n::draw_text("WRECKED", 0.40, 0.40, 1.4, [255, 60, 30, 255]);
+            banner.draw(cam.cam);
             n::set_entity_health(ped, n::get_entity_max_health(ped));
             involved.touching(ped, veh);
             shv::wait(0);
@@ -460,11 +660,12 @@ impl Wreck {
         while !n::is_screen_faded_out() {
             n::set_time_scale(s.slowmo);
             cam.update(veh, cam_start.elapsed().as_secs_f32());
-            n::draw_text("WRECKED", 0.40, 0.40, 1.4, [255, 60, 30, 255]);
+            banner.draw(cam.cam);
             shv::wait(0);
         }
         n::set_time_scale(1.0);
         cam.finish();
+        banner.finish();
         // Where it hit and where it ended up (it may have tumbled a way).
         let wreck_pos = n::get_entity_coords(veh);
         let cleared = if s.clear_radius > 0.0 { involved.remove() } else { 0 } + clear_around(ped, &[veh], &[crash_pos, wreck_pos], s.clear_radius);
@@ -521,6 +722,62 @@ impl Wreck {
         }
         n::set_entity_invincible(ped, false);
         n::set_player_invincible(player, false);
+    }
+}
+
+/// The big-message movie GTA's "WASTED" screen uses.
+const BIG_MESSAGE: &str = "MP_BIG_MESSAGE_FREEMODE";
+/// GTA's plain desaturation grade (the one behind the weapon wheel), used
+/// at `@wreck_desat` strength for a Burnout-style washed-out look; and the
+/// camera shake of GTA's own death screen.
+const DESAT: &str = "hud_def_desat_Neutral";
+const DEATH_SHAKE: &str = "DEATH_FAIL_IN_EFFECT_SHAKE";
+
+/// GTA's own "WASTED" screen showing another word: the same big message
+/// (font, size, place), sound and camera shake, with the colours washed
+/// out. The movie is loaded when the plugin starts, so it's ready the moment
+/// a wreck happens.
+struct Banner {
+    word: &'static str,
+    movie: i32,
+    desat: f32,
+    shown: bool,
+    since: std::time::Instant,
+}
+
+impl Banner {
+    fn new(word: &'static str, movie: i32, desat: f32) -> Self {
+        Banner { word, movie, desat, shown: false, since: std::time::Instant::now() }
+    }
+
+    /// Every frame while it's up; `cam` is the crash camera (0: gameplay).
+    fn draw(&mut self, cam: i32) {
+        if !self.shown && n::has_scaleform_movie_loaded(self.movie) {
+            // ~r~: GTA's red, as its own "wasted" is.
+            n::scaleform_call(self.movie, "SHOW_SHARD_WASTED_MP_MESSAGE", &[&format!("~r~{}", self.word), ""]);
+            n::play_sound_frontend("ScreenFlash", "WastedSounds");
+            if self.desat > 0.0 {
+                n::set_timecycle_modifier(DESAT, self.desat.min(1.0));
+            }
+            if cam != 0 {
+                n::shake_cam(cam, DEATH_SHAKE, 1.0);
+            } else {
+                n::shake_gameplay_cam(DEATH_SHAKE, 1.0);
+            }
+            self.shown = true;
+        }
+        if self.shown {
+            n::draw_scaleform_fullscreen(self.movie);
+        } else if self.since.elapsed().as_millis() > 500 {
+            // Still not loaded: plain text rather than nothing.
+            n::draw_text(self.word, 0.40, 0.40, 1.4, [255, 60, 30, 255]);
+        }
+    }
+
+    fn finish(self) {
+        if self.desat > 0.0 {
+            n::clear_timecycle_modifier();
+        }
     }
 }
 
@@ -739,6 +996,8 @@ fn crush(veh: i32, local: (f32, f32), damage: f32) {
 /// Dents a car around the struck side (`local`: unit direction in car space,
 /// x right, y forward), spread over `hits` points.
 fn dent(veh: i32, local: (f32, f32), damage: f32, hits: i32) {
+    // Looks only: the wheels stay where the crash itself left them.
+    n::set_vehicle_can_deform_wheels(veh, false);
     let (x, y) = local;
     for k in 0..hits {
         // Fan the hits across the struck face.
@@ -746,6 +1005,7 @@ fn dent(veh: i32, local: (f32, f32), damage: f32, hits: i32) {
         let (px, py) = (x * 1.0 + -y * spread * 0.6, y * 2.2 + x * spread);
         n::set_vehicle_damage(veh, px, py, 0.1 + (k % 2) as f32 * 0.3, damage, 1.2);
     }
+    n::set_vehicle_can_deform_wheels(veh, true);
 }
 
 /// Breaks glass and the panel nearest the struck side.

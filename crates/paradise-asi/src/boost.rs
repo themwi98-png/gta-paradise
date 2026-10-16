@@ -31,11 +31,14 @@ pub struct BoostSettings {
     pub seconds: f32,
     /// Multiplier on how fast the gauge refills.
     pub fill: f32,
+    /// Engine power while boosting is ENGINE_POWER times this (follows
+    /// `@car_power`, so boosting is always a step up from not boosting).
+    pub power: f32,
 }
 
 impl Default for BoostSettings {
     fn default() -> Self {
-        Self { enabled: true, accel: 9.0, top_mult: 1.8, min_top: 47.0, max_top: 95.0, seconds: 7.0, fill: 1.5 }
+        Self { enabled: true, accel: 9.0, top_mult: 1.8, min_top: 47.0, max_top: 135.0, seconds: 15.0, fill: 1.5, power: 1.0 }
     }
 }
 
@@ -129,7 +132,7 @@ impl Boost {
             self.stop();
         }
         if self.boosting {
-            n::set_vehicle_cheat_power_increase(veh, ENGINE_POWER);
+            n::set_vehicle_cheat_power_increase(veh, ENGINE_POWER * s.power.max(1.0));
             self.gauge = (self.gauge - dt / s.seconds.max(0.5)).max(0.0);
             if self.gauge <= 0.0 {
                 self.locked = true;

@@ -11,18 +11,26 @@ traffic, pedestrians and police live in it, with Burnout-style driving on top.
 
 - **True Open-World Paradise City:** custom collision meshes added for the vast majority of out-of-bounds surfaces. Still very rough, so expect collision glitches out of bounds, but there are far fewer areas to fall through the map. 
 - **Burnout crashes:** cars crumple and wreck in slow motion with a crash
-  camera, then you respawn nearby in a fresh copy of your car.
+  camera, then you respawn nearby in a fresh copy of your car. Smashed-up
+  looks don't stop you, but a wrecked engine does.
+- **Burnout driving:** drift assist, brake-to-drift, steady flight off jumps
+  and barrel rolls off split ramps. Off-road is as fast as the road.
 - **Boost:** a gauge you fill by driving fast, near misses, drifting, jumps
   and driving into oncoming traffic. Separate boost types not yet implemented.
-- **Faster, grippier cars**, extra gravity for jumps, and downforce.
+- **Retuned cars:** faster, harder braking, extra gravity for jumps, and
+  downforce.
 - **Street props** (lamp posts, traffic lights, benches, barriers…) placed
-  where Burnout had them, and harmless to smash through.
+  where Burnout had them. Smashing through them is purely visual: they never
+  slow you down or knock you off line.
+- **Traffic** that's busy downtown and quiet on country roads, following
+  Burnout's own traffic data.
 - **Police** that can follow you around Paradise City.
 - **A map viewer and editor** for hand-fixing collision, water, traffic lanes,
   sidewalks and spawn spots.
 
 The full list, with what's confirmed working, is in
-[docs/FEATURES.md](docs/FEATURES.md).
+[docs/FEATURES.md](docs/FEATURES.md); what changed in each release is in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Known issues
 
@@ -80,24 +88,36 @@ to `GTA5.exe`):
 2. Change a number, or `on` / `off`, after a setting's name. Lines starting
    with `#` are notes explaining each setting.
 3. Save. **No restart needed:** the game picks up changes within a few
-   seconds, so you can tweak while playing.
+   seconds, so you can tweak while playing. The exceptions are `@car_grip`
+   and `@car_brakes`, which are built into the car data: run
+   `paradise-setup.exe` again after changing them.
 
-Updating the mod keeps your values. If you break something, delete the file
-and run `paradise-setup.exe` again to get the defaults back.
+Updating the mod keeps the values you've changed; settings you never touched
+move to the new defaults. If you break something, delete the file and run
+`paradise-setup.exe` again to get the defaults back.
 
 The ones you're most likely to want:
 
 | Setting | Default | What it does |
 |---|---|---|
 | `@wreck` | on | Hard crashes wreck the car (slow motion, then a fresh car) |
-| `@wreck_speed` | 18 | How hard a hit has to be to wreck (sudden speed loss in m/s; 18 = 65 km/h) |
+| `@wreck_speed` | 25 | How hard a hit has to be to wreck (sudden speed loss in m/s; 25 = 90 km/h) |
+| `@crash_cam_speed` | 20 | Hits at least this hard (m/s; 20 = 72 km/h) show the slow-motion crash camera |
+| `@wreck_engine` | 100 | Engine health below which the car is wrecked (1000 = new) |
 | `@slowmo` | 0.15 | Game speed during the wreck slow motion (1 = normal) |
 | `@crash_time` | 5 | Seconds of slow motion before the respawn |
 | `@precrash` | on | Start the slow motion just before a wreck you can't avoid |
-| `@boost_seconds` | 7 | How long a full boost gauge lasts |
+| `@boost_seconds` | 15 | How long a full boost gauge lasts |
 | `@boost_fill` | 1.5 | How fast the boost gauge refills (2 = twice as fast) |
-| `@air_gravity` | 2 | How hard cars in the air are pulled down (1 = normal GTA) |
-| `@downforce` | 1 | Grip from downforce at speed (0 = none, 2 = glued down) |
+| `@air_gravity` | 3 | How hard cars in the air are pulled down (1 = normal GTA) |
+| `@air_control` | 0.7 | How steady cars stay in the air (0 = off, 1 = held steady) |
+| `@barrel_roll_trigger` | 90 | How hard a split ramp must roll you for a barrel roll (higher = fewer) |
+| `@downforce` | 0.75 | Grip from downforce at speed (0 = none, 2 = glued down) |
+| `@drift_assist` | 1.1 | Drift help: holds slides steady (0 = off, up to 3) |
+| `@brake_drift` | on | Tapping the brake while moving starts a drift, Burnout style |
+| `@car_grip` | 1.2 | Grip, times GTA's (re-run the setup after changing) |
+| `@car_brakes` | 1.75 | Braking power, times GTA's (re-run the setup after changing) |
+| `@traffic` | 1 | Amount of traffic (0 = empty roads, up to 3) |
 | `@police_power` | 2 | Engine power of police cars chasing you |
 | `@mode` | paradise | `off` gives you normal GTA V back without uninstalling |
 

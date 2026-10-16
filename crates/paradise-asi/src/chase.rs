@@ -17,6 +17,12 @@
 //! police car with a clear view of the player within SPOT_RANGE reports
 //! them, so the search doesn't go cold with the player in plain sight.
 //!
+//! At those speeds GTA's police kept crashing themselves out of the chase,
+//! so (`@police_tough`) their cars don't catch fire, keep at least
+//! ENGINE_FLOOR engine health (smashed up but still driving) and have
+//! strong bodies and axles, and their drivers can't be killed by a crash or
+//! thrown out of the car.
+//!
 //! Police route along the road nodes, which only exist where Burnout has
 //! traffic lanes. When the player drives somewhere without lanes (more than
 //! OFFROAD m from a node), police cars within ASSIST_RANGE are sent straight
@@ -37,16 +43,21 @@ pub struct PoliceSettings {
     pub power: f32,
     /// Extra top speed for pursuing police, percent.
     pub top: f32,
+    /// Police cars and drivers survive their own crashes.
+    pub tough: bool,
 }
 
 impl Default for PoliceSettings {
     fn default() -> Self {
-        Self { power: 2.0, top: 50.0 }
+        Self { power: 2.0, top: 100.0, tough: true }
     }
 }
 
 /// Police drivers near the player (within this, m) are tuned.
 const TUNE_RANGE: f32 = 600.0;
+/// Tough police cars never drop below this engine health (GTA: 1000 new,
+/// smoking below ~400, on fire below 0).
+const ENGINE_FLOOR: f32 = 250.0;
 /// A police car this close (m) with a clear line of sight sees the player.
 const SPOT_RANGE: f32 = 120.0;
 /// The player this far (m) from any road node is off the road network.
@@ -139,6 +150,17 @@ impl Chase {
                 if s.top > 0.0 {
                     n::modify_vehicle_top_speed(veh, s.top);
                 }
+                if s.tough {
+                    n::set_vehicle_strong(veh, true);
+                    n::set_vehicle_has_strong_axles(veh, true);
+                    n::set_disable_vehicle_fires(veh, true);
+                    n::set_collision_proof(driver, true);
+                    n::set_ped_config_flag(driver, 32, false); // through the windscreen
+                    n::set_ped_can_be_knocked_off_vehicle(driver, 1);
+                }
+            }
+            if s.tough && n::get_vehicle_engine_health(veh) < ENGINE_FLOOR {
+                n::set_vehicle_engine_health(veh, ENGINE_FLOOR);
             }
             if s.power > 1.0 {
                 n::set_vehicle_cheat_power_increase(veh, s.power);

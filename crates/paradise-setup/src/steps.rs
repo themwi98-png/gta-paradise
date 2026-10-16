@@ -35,6 +35,23 @@ fn nothing(_: &Ctx) -> String {
     String::new()
 }
 
+/// A multiplier baked into the car data: `key` from the player's
+/// paradise.ini in the GTA folder, else the mod's default.
+fn baked(c: &Ctx, key: &str, default: f64) -> f64 {
+    let read = |p: &Path| -> Option<f64> {
+        let text = std::fs::read_to_string(p).ok()?;
+        let line = text.lines().find(|l| l.split_whitespace().next().is_some_and(|k| k.eq_ignore_ascii_case(key)))?;
+        line.split_whitespace().nth(1)?.parse::<f64>().ok()
+    };
+    read(&c.games.gta.join("paradise.ini")).or_else(|| read(&c.path("tools/paradise.ini"))).unwrap_or(default).clamp(0.5, 5.0)
+}
+
+/// `@car_grip` and `@car_brakes`, as given to `bpx handling`. (Part of the
+/// handling step's fingerprint, so changing either redoes that step.)
+fn handling_args(c: &Ctx) -> String {
+    format!("--grip {} --brakes {}", baked(c, "@car_grip", 1.2), baked(c, "@car_brakes", 1.75))
+}
+
 /// What the install step's fingerprint covers outside the working folder:
 /// the plugin, Rockstar's files it starts from (a GTA update changes them)
 /// and the installed files themselves (gone or changed: install again).
@@ -91,7 +108,7 @@ const STEPS: &[Step] = &[
         extra: nothing,
         run: navmesh,
     },
-    Step { name: "handling", title: "Car handling", inputs: &[], deps: &[], outputs: &["out/crash/update/common/data/handling.meta"], extra: nothing, run: handling },
+    Step { name: "handling", title: "Car handling", inputs: &[], deps: &[], outputs: &["out/crash/update/common/data/handling.meta"], extra: handling_args, run: handling },
     Step {
         name: "install",
         title: "Installing into GTA V",
@@ -405,7 +422,10 @@ fn handling(c: &Ctx) -> Result<()> {
         }
     }
     c.clear(&["out/crash"])?;
-    c.bpx(&["handling", src, "out/crash/update"])
+    let args = handling_args(c);
+    let mut cmd = vec!["handling", src, "out/crash/update"];
+    cmd.extend(args.split_whitespace());
+    c.bpx(&cmd)
 }
 
 // --- Install --------------------------------------------------------------
@@ -422,13 +442,28 @@ fn file_id(p: &Path) -> String {
     std::fs::metadata(p).map(|m| format!("{} {:?}", m.len(), m.modified().ok())).unwrap_or_default()
 }
 
+/// Defaults earlier releases shipped that have since changed: a player
+/// still on one of these was never asked for it, so they get the new one.
+const OLD_DEFAULTS: [&str; 7] = [
+    "@wreck_speed 18",
+    "@prop_keep 0.9",
+    "@police_top 50",
+    "@air_gravity 2",
+    "@downforce 1",
+    "@boost_max_top 95",
+    "@boost_seconds 7",
+];
+
 /// The new paradise.ini, keeping the player's own value for every setting
-/// they already had (new settings come in with their defaults).
+/// they already had (new settings come in with their defaults, and a value
+/// left at an old default moves to the new one).
 fn merge_ini(new: &str, old: &str) -> String {
     let key = |l: &str| l.trim_start().starts_with('@').then(|| l.split_whitespace().next().unwrap_or("").to_lowercase());
+    let words = |l: &str| l.split_whitespace().map(str::to_lowercase).collect::<Vec<_>>();
+    let old_default = |l: &str| OLD_DEFAULTS.iter().any(|d| words(d) == words(l));
     let mut out = String::new();
     for line in new.lines() {
-        let kept = key(line).and_then(|k| old.lines().find(|o| key(o).as_deref() == Some(k.as_str())));
+        let kept = key(line).and_then(|k| old.lines().find(|o| key(o).as_deref() == Some(k.as_str()))).filter(|o| !old_default(o));
         out.push_str(kept.unwrap_or(line));
         out.push_str("\r\n");
     }
@@ -518,6 +553,11 @@ fn install(c: &Ctx) -> Result<()> {
     c.bpx(&["popzone", &c.burnout(), "out/base_meta/popzone.orig.ipl", "out/popzone_paradise.ipl"])?;
     c.cw(&["rpf-put", &g, &mods_update_s, "common/data/levels/gta5/popzone.ipl", "out/popzone_paradise.ipl", "--open"])?;
 
+    // Sand, dirt, grass... as fast as the road.
+    c.cw(&["extract", &g, r"update\update.rpf\common\data\materials\materials.dat", "out/base_meta/materials.orig.dat"])?;
+    c.bpx(&["ground-materials", "out/base_meta/materials.orig.dat", "out/materials_paradise.dat"])?;
+    c.cw(&["rpf-put", &g, &mods_update_s, "common/data/materials/materials.dat", "out/materials_paradise.dat", "--open"])?;
+
     // Car handling, at its update.rpf paths.
     let crash = c.path("out/crash/update");
     let mut files = Vec::new();
@@ -563,5 +603,12 @@ mod tests {
         let new = "# boost\n@boost on\n@boost_fill 1.5\n@new_thing 3\n";
         let old = "@boost_fill 2.5\n@gone 1\n";
         assert_eq!(super::merge_ini(new, old), "# boost\r\n@boost on\r\n@boost_fill 2.5\r\n@new_thing 3\r\n");
+    }
+
+    #[test]
+    fn ini_moves_old_defaults() {
+        let new = "@boost_seconds 15\n@air_gravity 3\n";
+        let old = "@boost_seconds 7\n@air_gravity 2.5\n";
+        assert_eq!(super::merge_ini(new, old), "@boost_seconds 15\r\n@air_gravity 2.5\r\n");
     }
 }

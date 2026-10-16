@@ -4,6 +4,7 @@
 //! - `bpx strip-base-map`: Los Santos taken out of the level's file lists
 //!   and out of Rockstar's patch packs.
 //! - `bpx popzone`: GTA's population zones from Burnout's district map.
+//! - `bpx ground-materials`: sand, dirt, grass... no longer slow cars down.
 //!
 //! Rockstar's files are kept byte for byte apart from the edits.
 
@@ -15,41 +16,64 @@ use std::path::{Path, PathBuf};
 
 // --- Handling -------------------------------------------------------------
 
-/// How much harder crashes hit (Rockstar's values average about 1.0 for
-/// deformation and collision, 1.5 for engine) and how much faster cars go,
-/// with upper limits (much higher deformation tears a car's physics apart).
-const HANDLING: [(&str, f64, f64); 9] = [
-    // Size and depth of dents.
-    ("fDeformationDamageMult", 6.0, 25.0),
+/// What happens to one handling field.
+#[derive(Clone, Copy)]
+enum Change {
+    /// Rockstar's value times this, but not above the limit (unless
+    /// Rockstar's own value is already higher).
+    Scale(f64, f64),
+    /// The same value for every vehicle.
+    Set(f64),
+    /// Scaled by the grip multiplier (`--grip`), with this limit.
+    Grip(f64),
+    /// Scaled by the brake multiplier (`--brakes`), with this limit.
+    Brakes(f64),
+}
+
+/// Grip multiplier when none is given (the player's `@car_grip`).
+pub const GRIP_DEFAULT: f64 = 1.2;
+/// Brake multiplier when none is given (the player's `@car_brakes`).
+pub const BRAKES_DEFAULT: f64 = 1.75;
+
+/// How much harder crashes hit and how much faster cars go (Rockstar's
+/// values average about 0.8 for deformation, 1.0 for collision and 1.5 for
+/// engine damage).
+const HANDLING: [(&str, Change); 9] = [
+    // Size and depth of dents: one deep value for every car (as in the
+    // "Better Deformation" handling mod). Scaling Rockstar's values instead
+    // left most cars shallower and trucks (4.0 x 6) torn apart.
+    ("fDeformationDamageMult", Change::Set(6.2)),
     // Body health lost per crash.
-    ("fCollisionDamageMult", 4.0, 10.0),
-    // Engine health lost per crash (smoke, fire, breakdown).
-    ("fEngineDamageMult", 3.0, 8.0),
+    ("fCollisionDamageMult", Change::Scale(5.0, 10.0)),
+    // Engine health lost per crash: half Rockstar's, so a smashed-up car
+    // keeps driving, Burnout style; fire and a dead engine take a lot of
+    // punishment (hard crashes still wreck it outright).
+    ("fEngineDamageMult", Change::Scale(0.5, 5.0)),
     // Top speed (the gearing's flat-out speed).
-    ("fInitialDriveMaxFlatVel", 1.35, 500.0),
+    ("fInitialDriveMaxFlatVel", Change::Scale(1.35, 500.0)),
     // Engine power: acceleration, and reaching that top speed.
-    ("fInitialDriveForce", 1.5, 3.0),
-    // Stronger brakes to match.
-    ("fBrakeForce", 1.25, 3.0),
+    ("fInitialDriveForce", Change::Scale(1.35, 3.0)),
+    // Stronger brakes to match. The multiplier is `--brakes` (BRAKES_DEFAULT).
+    ("fBrakeForce", Change::Brakes(3.0)),
     // Grip: peak cornering grip, and grip while sliding (so slides are
-    // catchable at speed).
-    ("fTractionCurveMax", 1.4, 5.0),
-    ("fTractionCurveMin", 1.4, 5.0),
+    // catchable at speed). The multiplier is `--grip` (GRIP_DEFAULT).
+    ("fTractionCurveMax", Change::Grip(5.0)),
+    ("fTractionCurveMin", Change::Grip(5.0)),
     // Less wheelspin pulling away (the extra engine power spins the tyres).
-    ("fLowSpeedTractionLossMult", 0.6, 5.0),
+    ("fLowSpeedTractionLossMult", Change::Scale(0.6, 5.0)),
 ];
 
 /// Scales the handling fields in one handling.meta; returns the new text and
 /// how many values changed. A field is `<name` + whitespace + `value="` +
 /// number + `"`.
-fn scale_handling(text: &str) -> (String, usize) {
+fn scale_handling(text: &str, grip: f64, brakes: f64) -> (String, usize) {
     let mut out = String::with_capacity(text.len());
     let mut n = 0;
     let mut rest = text;
     'outer: while let Some(lt) = rest.find('<') {
         out.push_str(&rest[..lt]);
         let tail = &rest[lt + 1..];
-        for (name, scale, cap) in HANDLING {
+        for (name, change) in HANDLING {
             let Some(after) = tail.strip_prefix(name) else { continue };
             let ws = after.len() - after.trim_start().len();
             if ws == 0 {
@@ -63,7 +87,13 @@ fn scale_handling(text: &str) -> (String, usize) {
             let Ok(v) = num_start[..num_len].parse::<f64>() else { continue };
             let head_len = 1 + name.len() + ws + "value=\"".len();
             out.push_str(&rest[lt..lt + head_len]);
-            out.push_str(&format!("{:.6}", (v * scale).min(v.max(cap))));
+            let new = match change {
+                Change::Scale(scale, cap) => (v * scale).min(v.max(cap)),
+                Change::Set(value) => value,
+                Change::Grip(cap) => (v * grip).min(v.max(cap)),
+                Change::Brakes(cap) => (v * brakes).min(v.max(cap)),
+            };
+            out.push_str(&format!("{new:.6}"));
             n += 1;
             rest = &num_start[num_len..];
             continue 'outer;
@@ -75,7 +105,7 @@ fn scale_handling(text: &str) -> (String, usize) {
     (out, n)
 }
 
-/// `bpx handling <handling_src-dir> <out-dir>`: Rockstar's handling files
+/// `bpx handling <handling_src-dir> <out-dir> [--grip x] [--brakes x]`: Rockstar's handling files
 /// with the fields in HANDLING scaled, at the paths update.rpf uses:
 ///     common/data/handling.meta                     base-game vehicles
 ///     dlc_patch/<pack>/common/data/handling.meta    each DLC pack's vehicles
@@ -84,7 +114,7 @@ fn scale_handling(text: &str) -> (String, usize) {
 ///     _update/update/update.rpf/common/data/handling.meta
 ///     _update/update/update.rpf/dlc_patch/<pack>/common/data/handling.meta
 ///     <pack>/handling.meta
-pub fn handling(src: &Path, out: &Path) -> Result<()> {
+pub fn handling(src: &Path, out: &Path, grip: f64, brakes: f64) -> Result<()> {
     let upd = src.join("_update/update/update.rpf");
     let mut files = vec![(upd.join("common/data/handling.meta"), out.join("common/data/handling.meta"))];
     let mut packs: Vec<PathBuf> = std::fs::read_dir(src)?.filter_map(|e| Some(e.ok()?.path())).collect();
@@ -101,7 +131,7 @@ pub fn handling(src: &Path, out: &Path) -> Result<()> {
     let mut total = 0;
     for (s, t) in &files {
         let text = std::fs::read_to_string(s).with_context(|| format!("reading {}", s.display()))?;
-        let (text, n) = scale_handling(&text);
+        let (text, n) = scale_handling(&text, grip, brakes);
         std::fs::create_dir_all(t.parent().unwrap())?;
         std::fs::write(t, text)?;
         total += n;
@@ -361,5 +391,71 @@ pub fn popzone(game: &Path, orig: &Path, out: &Path) -> Result<()> {
     lines.push("end".to_string());
     std::fs::write(out, lines.join("\r\n") + "\r\n")?;
     println!("popzone: {n} district boxes + ocean fallback");
+    Ok(())
+}
+
+// --- Ground materials -----------------------------------------------------
+
+/// Columns of a materials.dat row (whitespace separated): name, filter, fx
+/// group, vfx disturbance, rumble profile, react weapon, friction,
+/// elasticity, density, tyre grip, wet grip, tyre drag, top speed mult...
+const TYRE_DRAG: usize = 11;
+const TOP_SPEED_MULT: usize = 12;
+
+/// `bpx ground-materials <original materials.dat> <out>`: Burnout's off-road is as
+/// fast as the road, so no ground drags at the tyres (tyre drag 0) or caps
+/// the top speed (top speed multiplier at least 1). Grip is left as it is.
+pub fn ground_materials(orig: &Path, out: &Path) -> Result<()> {
+    let text = String::from_utf8_lossy(&std::fs::read(orig)?).into_owned();
+    let mut changed = Vec::new();
+    let mut lines = Vec::new();
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            lines.push(line.to_string());
+            continue;
+        }
+        // Fields with their positions, so the spacing is kept.
+        let mut fields: Vec<(usize, usize)> = Vec::new();
+        let mut start = None;
+        for (i, ch) in line.char_indices() {
+            match (ch.is_whitespace(), start) {
+                (false, None) => start = Some(i),
+                (true, Some(s)) => {
+                    fields.push((s, i));
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(s) = start {
+            fields.push((s, line.len()));
+        }
+        let num = |k: usize| fields.get(k).and_then(|&(a, b)| line[a..b].parse::<f32>().ok());
+        let (Some(drag), Some(top)) = (num(TYRE_DRAG), num(TOP_SPEED_MULT)) else {
+            lines.push(line.to_string());
+            continue;
+        };
+        if drag <= 0.0 && top >= 1.0 {
+            lines.push(line.to_string());
+            continue;
+        }
+        let name = &line[fields[0].0..fields[0].1];
+        changed.push(format!("{name} (drag {drag}, top speed x{top})"));
+        // Later field first, so the earlier one's position still holds.
+        let mut l = line.to_string();
+        if top < 1.0 {
+            let (a, b) = fields[TOP_SPEED_MULT];
+            l.replace_range(a..b, "1.0");
+        }
+        if drag > 0.0 {
+            let (a, b) = fields[TYRE_DRAG];
+            l.replace_range(a..b, "0.0");
+        }
+        lines.push(l);
+    }
+    anyhow::ensure!(!changed.is_empty(), "{}: no material rows found", orig.display());
+    std::fs::write(out, lines.concat())?;
+    println!("materials: {} ground types no longer slow cars: {}", changed.len(), changed.join(", "));
     Ok(())
 }

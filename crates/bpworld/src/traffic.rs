@@ -30,6 +30,8 @@ pub struct Section {
     pub length: f32,
     pub turn_left_prob: u8,
     pub turn_right_prob: u8,
+    /// How busy the lane is: Burnout's traffic flow (vehicles per minute).
+    pub vehicles_per_minute: u16,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -89,6 +91,8 @@ pub fn parse_traffic(b: &[u8]) -> Traffic {
         let sections_at = u32_at(b, ho + 0x10) as usize;
         let rungs_at = u32_at(b, ho + 0x14) as usize;
         let neighbours_at = u32_at(b, ho + 0x1C) as usize;
+        // One flow (flow type, vehicles per minute) per section.
+        let flows_at = u32_at(b, ho + 0x28) as usize;
         let rung = |i: usize| -> [[f32; 3]; 2] {
             let o = rungs_at + i * RUNG_SIZE;
             [vec3(b, o), vec3(b, o + 0x10)]
@@ -120,6 +124,7 @@ pub fn parse_traffic(b: &[u8]) -> Traffic {
                 length: f32_at(b, so + 0x28),
                 turn_left_prob: b[so + 0x1A],
                 turn_right_prob: b[so + 0x1B],
+                vehicles_per_minute: if flows_at == 0 { 0 } else { u16_at(b, flows_at + s * 4 + 2) },
             });
         }
         let num_static = b[ho + 5] as usize;

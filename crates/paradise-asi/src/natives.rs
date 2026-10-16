@@ -772,3 +772,160 @@ pub fn set_vehicle_generators_active_in_area(a: Vec3, b: Vec3, on: bool) {
 pub fn remove_vehicles_from_generators_in_area(a: Vec3, b: Vec3) {
     call(0x46A1E1A299EC4BBA, args!(a.x, a.y, a.z, b.x, b.y, b.z, 0));
 }
+
+// --- Clock ---------------------------------------------------------------
+
+/// The in-game date and time: [hour, minute, second, day, month, year].
+pub fn clock() -> [i32; 6] {
+    [
+        ret_i32(call(0x25223CA6B4D20B7F, &[])),
+        ret_i32(call(0x13D2B8ADD79640F2, &[])),
+        ret_i32(call(0x494E97C2EF27C470, &[])),
+        ret_i32(call(0x3D10BC92A4DB1D35, &[])),
+        ret_i32(call(0xBBC72712E80257A1, &[])),
+        ret_i32(call(0x961777E64BDAF717, &[])),
+    ]
+}
+
+pub fn set_clock(c: [i32; 6]) {
+    call(0xB096419DF0D06CE7, args!(c[3], c[4], c[5]));
+    call(0x47C3B5848C3E45D8, args!(c[0], c[1], c[2]));
+}
+
+// --- Driver protection -----------------------------------------------------
+
+/// SET_ENTITY_PROOFS with only collision damage blocked (or nothing).
+pub fn set_collision_proof(entity: i32, on: bool) {
+    call(0xFAEE099C6F890BB8, args!(entity, false, false, false, on, false, false, false, false));
+}
+
+/// SET_PED_CAN_BE_KNOCKED_OFF_VEHICLE: 0 default, 1 never.
+pub fn set_ped_can_be_knocked_off_vehicle(ped: i32, state: i32) {
+    call(0x7A6535691B477C48, args!(ped, state));
+}
+
+// --- Big messages and frontend sounds -----------------------------------
+
+pub fn request_scaleform_movie(name: &str) -> i32 {
+    let s = CString::new(name).unwrap();
+    ret_i32(call(0x11FE353CF9733E6F, args!(s.as_ptr())))
+}
+
+pub fn has_scaleform_movie_loaded(handle: i32) -> bool {
+    ret_bool(call(0x85F01B8D5B90570E, args!(handle)))
+}
+
+/// Calls a method of a scaleform movie with string arguments.
+pub fn scaleform_call(handle: i32, method: &str, strings: &[&str]) {
+    let m = CString::new(method).unwrap();
+    if !ret_bool(call(0xF6E48914C7A8694E, args!(handle, m.as_ptr()))) {
+        return;
+    }
+    for s in strings {
+        let c = CString::new(*s).unwrap();
+        call(0xBA7148484BD90365, args!(c.as_ptr()));
+    }
+    call(0xC6796A8FFA375E53, &[]);
+}
+
+pub fn draw_scaleform_fullscreen(handle: i32) {
+    call(0x0DF606929C105BE1, args!(handle, 255, 255, 255, 255, 0));
+}
+
+pub fn play_sound_frontend(name: &str, set: &str) {
+    let (a, b) = (CString::new(name).unwrap(), CString::new(set).unwrap());
+    call(0x67C540AA08E4A6F5, args!(-1, a.as_ptr(), b.as_ptr(), true));
+}
+
+/// SET_TIMECYCLE_MODIFIER at a strength (0..1).
+pub fn set_timecycle_modifier(name: &str, strength: f32) {
+    let c = CString::new(name).unwrap();
+    call(0x2C933ABF17A1DF41, args!(c.as_ptr()));
+    call(0x82E7FFCD5B2326B3, args!(strength));
+}
+
+pub fn clear_timecycle_modifier() {
+    call(0x0F07E7745A236711, &[]);
+}
+
+pub fn shake_cam(cam: i32, name: &str, amplitude: f32) {
+    let s = CString::new(name).unwrap();
+    call(0x6A25241C340D3822, args!(cam, s.as_ptr(), amplitude));
+}
+
+/// No petrol tank damage or fires, and no engine fires.
+pub fn set_disable_vehicle_fires(vehicle: i32, on: bool) {
+    call(0x37C8252A7C92D017, args!(vehicle, on));
+    call(0x465BF26AB9684352, args!(vehicle, on));
+    call(0x91A0BD635321F145, args!(vehicle, on));
+}
+
+/// GET_ENTITY_ROTATION_VELOCITY: angular velocity (rad/s; z = yaw, + left).
+pub fn get_entity_rotation_velocity(entity: i32) -> Vec3 {
+    unsafe { *(call(0x213B91045D09B983, args!(entity)) as *const Vec3) }
+}
+
+pub fn set_entity_angular_velocity(entity: i32, x: f32, y: f32, z: f32) {
+    call(0x8339643499D1222E, args!(entity, x, y, z));
+}
+
+/// DISABLE_CONTROL_ACTION (pad 0) for this frame, that action only.
+pub fn disable_control_only(action: i32) {
+    call(0xFE99B66D079CF6BC, args!(0, action, false));
+}
+
+/// GET_DISABLED_CONTROL_NORMAL (pad 0): the input even while disabled.
+pub fn get_disabled_control_normal(action: i32) -> f32 {
+    ret_f32(call(0x11E65974A982637C, args!(0, action)))
+}
+
+
+// ---- Drivability damage ----
+
+/// GET_WORLD_POSITION_OF_ENTITY_BONE
+pub fn get_world_position_of_entity_bone(entity: i32, bone: i32) -> Vec3 {
+    unsafe { *(call(0x44A8FCB8ED227738, args!(entity, bone)) as *const Vec3) }
+}
+
+/// GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS: a world point in the entity's
+/// own space (x right, y forward, z up).
+pub fn get_offset_from_entity_given_world_coords(entity: i32, p: Vec3) -> Vec3 {
+    unsafe { *(call(0x2274BC1C4885E333, args!(entity, p.x, p.y, p.z)) as *const Vec3) }
+}
+
+/// SET_VEHICLE_TYRES_CAN_BURST (false: tyres can't be popped).
+pub fn set_vehicle_tyres_can_burst(vehicle: i32, on: bool) {
+    call(0xEB9DC3C7D8596C46, args!(vehicle, on));
+}
+
+/// SET_VEHICLE_DENSITY_MULTIPLIER_THIS_FRAME: amount of traffic (1 = normal).
+pub fn set_vehicle_density_multiplier_this_frame(m: f32) {
+    call(0x245A6883D966D537, args!(m));
+}
+
+pub fn set_random_vehicle_density_multiplier_this_frame(m: f32) {
+    call(0xB3B3359379FE77D3, args!(m));
+}
+
+/// SET_VEHICLE_HANDBRAKE: holds the handbrake on, whatever the driver does.
+pub fn set_vehicle_handbrake(vehicle: i32, on: bool) {
+    call(0x684785568EF26A22, args!(vehicle, on));
+}
+
+/// GET_ENTITY_MATRIX: the entity's right, forward and up directions (world).
+pub fn get_entity_matrix(entity: i32) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    let (mut f, mut r, mut u, mut p) = (Vec3::default(), Vec3::default(), Vec3::default(), Vec3::default());
+    call(0xECB2FC7235A7D137, args!(entity, &mut f as *mut Vec3, &mut r as *mut Vec3, &mut u as *mut Vec3, &mut p as *mut Vec3));
+    ([r.x, r.y, r.z], [f.x, f.y, f.z], [u.x, u.y, u.z])
+}
+
+/// GET_ENTITY_HEIGHT_ABOVE_GROUND (m).
+pub fn get_entity_height_above_ground(entity: i32) -> f32 {
+    ret_f32(call(0x1DD55701034110E5, args!(entity)))
+}
+
+/// SET_ENTITY_NO_COLLISION_ENTITY: the two don't collide (this frame only,
+/// or until turned back on).
+pub fn set_entity_no_collision_entity(a: i32, b: i32, this_frame: bool) {
+    call(0xA53ED5520C07654A, args!(a, b, this_frame));
+}

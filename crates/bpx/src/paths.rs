@@ -12,8 +12,19 @@ use std::path::Path;
 pub fn load_traffic(game: &Path) -> Result<Traffic> {
     let b = Bundle::open(game.join("B5TRAFFIC.BNDL"))?;
     let e = b.entries.iter().find(|e| e.type_id == traffic::TRAFFIC_DATA).context("no TrafficData in B5TRAFFIC.BNDL")?;
-    Ok(traffic::parse_traffic(&Res::load(&b, e)?.main))
+    let mut t = traffic::parse_traffic(&Res::load(&b, e)?.main);
+    // A fifth of Burnout's lanes have no flow of their own (cars only pass
+    // through from other lanes), long ones too; in GTA a road where no
+    // traffic starts looks dead, so they count as the quietest. A 0 set in
+    // the editor still means none.
+    for sec in t.hulls.iter_mut().flat_map(|h| h.sections.iter_mut()) {
+        sec.vehicles_per_minute = sec.vehicles_per_minute.max(MIN_BURNOUT_FLOW);
+    }
+    Ok(t)
 }
+
+/// Least traffic flow (vehicles per minute) a Burnout lane gets.
+const MIN_BURNOUT_FLOW: u16 = 1;
 
 /// Burnout traffic with the hand edits (tools/edits/traffic_edits.json)
 /// applied.
@@ -55,12 +66,15 @@ pub fn dump(game: &Path, out: &Path, placement: Placement) -> Result<()> {
         t.hulls.len()
     );
     println!("speed p5/p50/p95 {:.1}/{:.1}/{:.1}; lane width p5/p50/p95 {:.2}/{:.2}/{:.2}", pct(&speeds, 0.05), pct(&speeds, 0.5), pct(&speeds, 0.95), pct(&widths, 0.05), pct(&widths, 0.5), pct(&widths, 0.95));
-    let mut csv = String::from("hull,section,rung,x,y,z\n");
+    let mut vpm: Vec<f32> = t.hulls.iter().flat_map(|h| &h.sections).map(|s| s.vehicles_per_minute as f32).collect();
+    vpm.sort_by(f32::total_cmp);
+    println!("vehicles per minute p0/p5/p25/p50/p75/p95/p100 {}/{}/{}/{}/{}/{}/{}", pct(&vpm, 0.0), pct(&vpm, 0.05), pct(&vpm, 0.25), pct(&vpm, 0.5), pct(&vpm, 0.75), pct(&vpm, 0.95), pct(&vpm, 1.0));
+    let mut csv = String::from("hull,section,rung,x,y,z,vehicles_per_minute\n");
     for (h, hull) in t.hulls.iter().enumerate() {
         for (s, sec) in hull.sections.iter().enumerate() {
             for (i, r) in sec.rungs.iter().enumerate() {
                 let p = placement.apply(centre(r));
-                let _ = writeln!(csv, "{h},{s},{i},{:.2},{:.2},{:.2}", p[0], p[1], p[2]);
+                let _ = writeln!(csv, "{h},{s},{i},{:.2},{:.2},{:.2},{}", p[0], p[1], p[2], sec.vehicles_per_minute);
             }
         }
     }
@@ -283,6 +297,15 @@ impl Dsu {
     }
 }
 
+/// GTA node density (0-15: how much traffic starts there, relative to other
+/// nodes) per vehicle per minute of Burnout traffic flow (0-9). Burnout's
+/// middle value (5) gives 6, what every node had before.
+const DENSITY_PER_VPM: f32 = 1.2;
+
+fn gta_density(vehicles_per_minute: u16) -> u8 {
+    (vehicles_per_minute as f32 * DENSITY_PER_VPM).round().clamp(0.0, 15.0) as u8
+}
+
 /// GTA node speed class (0 slow .. 3 fastest) from a Burnout lane speed (m/s).
 fn speed_class(speed: f32) -> u8 {
     match speed {
@@ -304,6 +327,7 @@ pub fn export(game: &Path, out_dir: &Path, placement: Placement) -> Result<()> {
     // Candidate nodes: the kept rungs of every lane, as indices into `pos`.
     let mut pos: Vec<[f32; 3]> = Vec::new();
     let mut speed: Vec<f32> = Vec::new();
+    let mut busy: Vec<u16> = Vec::new();
     let mut lane_nodes: Vec<Vec<Vec<usize>>> = Vec::with_capacity(t.hulls.len());
     let heading = |a: [f32; 3], b: [f32; 3]| (b[1] - a[1]).atan2(b[0] - a[0]);
     for hull in &t.hulls {
@@ -335,6 +359,7 @@ pub fn export(game: &Path, out_dir: &Path, placement: Placement) -> Result<()> {
                 .map(|&i| {
                     pos.push(pts[i]);
                     speed.push(sec.speed);
+                    busy.push(sec.vehicles_per_minute);
                     pos.len() - 1
                 })
                 .collect();
@@ -363,14 +388,14 @@ pub fn export(game: &Path, out_dir: &Path, placement: Placement) -> Result<()> {
         }
     }
 
-    // Merged nodes: averaged position, fastest lane speed.
+    // Merged nodes: averaged position, fastest lane speed, busiest lane.
     let mut rep_index: HashMap<usize, usize> = HashMap::new();
-    let mut sums: Vec<([f32; 3], usize, f32)> = Vec::new();
+    let mut sums: Vec<([f32; 3], usize, f32, u16)> = Vec::new();
     let mut node_of = vec![0usize; pos.len()];
     for i in 0..pos.len() {
         let r = dsu.find(i);
         let k = *rep_index.entry(r).or_insert_with(|| {
-            sums.push(([0.0; 3], 0, 0.0));
+            sums.push(([0.0; 3], 0, 0.0, 0));
             sums.len() - 1
         });
         let n = &mut sums[k];
@@ -379,6 +404,7 @@ pub fn export(game: &Path, out_dir: &Path, placement: Placement) -> Result<()> {
         }
         n.1 += 1;
         n.2 = n.2.max(speed[i]);
+        n.3 = n.3.max(busy[i]);
         node_of[i] = k;
     }
     let node_pos: Vec<[f32; 3]> = sums.iter().map(|n| [n.0[0] / n.1 as f32, n.0[1] / n.1 as f32, n.0[2] / n.1 as f32]).collect();
@@ -408,7 +434,8 @@ pub fn export(game: &Path, out_dir: &Path, placement: Placement) -> Result<()> {
     }
 
     let speeds: Vec<f32> = sums.iter().map(|n| n.2).collect();
-    let (total, areas, max_links) = write_ynds(&node_pos, &speeds, &links, out_dir)?;
+    let density: Vec<u8> = sums.iter().map(|n| gta_density(n.3)).collect();
+    let (total, areas, max_links) = write_ynds(&node_pos, &speeds, &density, &links, out_dir)?;
     let link_count = links.iter().map(|l| l.len()).sum::<usize>() / 2;
     println!(
         "paths: {} lane nodes merged into {total} GTA nodes, {link_count} links (max {max_links} per node), {areas} areas used -> {}",
@@ -420,9 +447,10 @@ pub fn export(game: &Path, out_dir: &Path, placement: Placement) -> Result<()> {
 
 /// Writes one ynd XML per GTA path area (all 1024, empty where there is no
 /// road, so the Los Santos nodes are replaced). `links[i]` lists (to, lanes
-/// from i towards `to`, lanes back). Nodes without links are dropped.
+/// from i towards `to`, lanes back); `density` is GTA's 0-15 traffic density
+/// per node. Nodes without links are dropped.
 /// Returns (nodes written, areas used, most links on a node).
-fn write_ynds(node_pos: &[[f32; 3]], speed: &[f32], links: &[Vec<(usize, u8, u8)>], out_dir: &Path) -> Result<(usize, usize, usize)> {
+fn write_ynds(node_pos: &[[f32; 3]], speed: &[f32], density: &[u8], links: &[Vec<(usize, u8, u8)>], out_dir: &Path) -> Result<(usize, usize, usize)> {
     // Areas and ids; nodes without links are dropped.
     let mut area_nodes: Vec<Vec<usize>> = vec![Vec::new(); AREAS * AREAS];
     for (i, p) in node_pos.iter().enumerate() {
@@ -458,12 +486,12 @@ fn write_ynds(node_pos: &[[f32; 3]], speed: &[f32], links: &[Vec<(usize, u8, u8)
                 let class = speed_class(speed[i]);
                 // Flags0 2: GPS enabled; Flags2 4: junction (3+ roads meet;
                 // set on most of Los Santos' junction nodes and no others),
-                // 64: highway; Flags4 bits 0-3: density 6, bits 4-6: how deep
+                // 64: highway; Flags4 bits 0-3: density, bits 4-6: how deep
                 // in a dead end (as in Los Santos, so routes avoid them);
                 // Flags5 bits 1-2: speed class.
                 let highway = if class >= 3 { 64 } else { 0 };
                 let junction = if links[i].len() >= 3 { 4 } else { 0 };
-                let flags4 = 6 | (dead[i] << 4);
+                let flags4 = density[i].min(15) | (dead[i] << 4);
                 let _ = write!(
                     xml,
                     "  <Item>\n   <AreaID value=\"{area}\" />\n   <NodeID value=\"{k}\" />\n   <StreetName />\n   <Position x=\"{}\" y=\"{}\" z=\"{}\" />\n   <Flags0 value=\"2\" />\n   <Flags1 value=\"0\" />\n   <Flags2 value=\"{}\" />\n   <Flags3 value=\"0\" />\n   <Flags4 value=\"{flags4}\" />\n   <Flags5 value=\"{}\" />\n   <Links>\n",
@@ -650,6 +678,7 @@ pub fn export_roads(game: &Path, out_dir: &Path, placement: Placement) -> Result
     let mut rungs: Vec<[[f32; 3]; 2]> = Vec::new();
     let mut rung_lane: Vec<usize> = Vec::new();
     let mut lanes: Vec<(f32, Vec<usize>)> = Vec::new();
+    let mut lane_busy: Vec<u16> = Vec::new();
     for hull in &t.hulls {
         for sec in &hull.sections {
             let lane = lanes.len();
@@ -663,6 +692,7 @@ pub fn export_roads(game: &Path, out_dir: &Path, placement: Placement) -> Result
                 })
                 .collect();
             lanes.push((sec.speed, ids));
+            lane_busy.push(sec.vehicles_per_minute);
         }
     }
     let n = rungs.len();
@@ -720,6 +750,7 @@ pub fn export_roads(game: &Path, out_dir: &Path, placement: Placement) -> Result
     let mut node_of_root: HashMap<usize, usize> = HashMap::new();
     let mut node_pos: Vec<[f32; 3]> = Vec::new();
     let mut node_speed: Vec<f32> = Vec::new();
+    let mut node_density: Vec<u8> = Vec::new();
     let (mut two_way, mut split_ok, mut repeat_lane) = (0usize, 0usize, 0usize);
     for (&root, ids) in &members {
         let h0 = heading[ids[0]];
@@ -756,6 +787,8 @@ pub fn export_roads(game: &Path, out_dir: &Path, placement: Placement) -> Result
         node_of_root.insert(root, node_pos.len());
         node_pos.push(pos);
         node_speed.push(ids.iter().map(|&i| lanes[rung_lane[i]].0).fold(0.0, f32::max));
+        // As busy as its busiest lane.
+        node_density.push(gta_density(ids.iter().map(|&i| lane_busy[rung_lane[i]]).max().unwrap_or(0)));
     }
 
     // Links: distinct lanes stepping between cross-sections, per direction.
@@ -852,7 +885,14 @@ pub fn export_roads(game: &Path, out_dir: &Path, placement: Placement) -> Result
         hist[(l.1 + l.2).min(7) as usize] += 1;
     }
     let scc = largest_scc_fraction(&links);
-    let (total, areas, max_links) = write_ynds(&node_pos, &node_speed, &links, out_dir)?;
+    let (total, areas, max_links) = write_ynds(&node_pos, &node_speed, &node_density, &links, out_dir)?;
+    let mut by_density = [0usize; 16];
+    for (i, l) in links.iter().enumerate() {
+        if !l.is_empty() {
+            by_density[node_density[i] as usize] += 1;
+        }
+    }
+    println!("roads: nodes by traffic density 0-15 {by_density:?}");
     println!(
         "roads: {n} rungs -> {} cross-sections ({two_way} two-way, {split_ok} with directions cleanly split, {repeat_lane} folding one lane twice); {before} linked nodes thinned to {total}",
         members.len()
@@ -1003,7 +1043,7 @@ fn merge_diamonds(adj: &mut [BTreeMap<usize, (u8, u8)>], pos: &[[f32; 3]]) -> us
 /// `bpx traffic-json`: Burnout traffic for the viewer traffic editor
 /// (tools/viewer/traffic.js), unedited and in Burnout coordinates (y up):
 /// `{"lanes": [{"id": "hull:section", "pts": [x, y, z, ...] lane centre,
-/// "width": m, "speed": m/s, "next": [ids]}], "parked": [{"id": "hull:index",
+/// "width": m, "speed": m/s, "traffic": vehicles per minute, "next": [ids]}], "parked": [{"id": "hull:index",
 /// "pos": [x, y, z], "dir": [dx, dz]}]}`.
 pub fn export_json(game: &Path, out: &Path) -> Result<()> {
     let t = load_traffic(game)?;
@@ -1019,7 +1059,7 @@ pub fn export_json(game: &Path, out: &Path) -> Result<()> {
             let mut widths: Vec<f32> = sec.rungs.iter().map(|r| ((r[0][0] - r[1][0]).powi(2) + (r[0][2] - r[1][2]).powi(2)).sqrt()).collect();
             widths.sort_by(f32::total_cmp);
             let next: Vec<String> = sec.forward.iter().map(|(fh, fs)| format!("{fh}:{fs}")).collect();
-            lanes.push(serde_json::json!({"id": format!("{h}:{s}"), "pts": pts, "width": r1(widths[widths.len() / 2]), "speed": r1(sec.speed), "next": next}));
+            lanes.push(serde_json::json!({"id": format!("{h}:{s}"), "pts": pts, "width": r1(widths[widths.len() / 2]), "speed": r1(sec.speed), "traffic": sec.vehicles_per_minute, "next": next}));
         }
         for (i, v) in hull.parked.iter().enumerate() {
             let m = &v.transform;

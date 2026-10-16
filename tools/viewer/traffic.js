@@ -5,6 +5,11 @@
 // roads and parked cars are built (crates/bpx/src/edits.rs mirrors the rules
 // here: reverse first, then shift to the right of the driving direction).
 //
+// Traffic levels: each lane has Burnout's own traffic flow (vehicles per
+// minute, 0-9; 0 = no cars start there), which becomes how much GTA traffic
+// starts on that road. "Colour by traffic" shows it; "Set traffic" changes
+// it for the selection, and "Select area" selects every lane in a box.
+//
 // Everything is in Burnout coordinates (y up), like the rest of the viewer.
 
 const STORAGE_KEY = 'paradise-traffic-edits-v1';
@@ -12,6 +17,8 @@ const LIFT = 0.4;           // draw lanes this far above the road (m)
 const CHEVRON_EVERY = 12;   // arrow spacing along lanes (m)
 const PICK_PX = 12;         // click distance for selecting (pixels)
 const SHIFT_STEP = 0.25;    // sideways nudge (m)
+const DRAWN_TRAFFIC = 5;    // traffic level of a drawn lane (matches bpx)
+const MAX_TRAFFIC = 9;      // busiest Burnout lane (colour scale)
 
 const COLOURS = {
   lane: 0xffd23f, reversed: 0xff8a00, shifted: 0xffe98f, deleted: 0x7a2525,
@@ -35,6 +42,8 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
     <div class="row"><button id="tReverse">Reverse</button><button id="tDelete">Delete</button><button id="tRestore">Restore</button></div>
     <div class="row"><button id="tLeft">◀ Shift</button><button id="tRight">Shift ▶</button><button id="tConnect">Connect A→B</button></div>
     <div class="row"><input id="tSpeed" type="number" min="5" max="250" step="5" placeholder="km/h" style="width:70px"><button id="tSetSpeed">Set speed</button></div>
+    <label><input id="tHeat" type="checkbox"> Colour by traffic (grey none, blue quiet … red busy)</label>
+    <div class="row"><input id="tBusy" type="number" min="0" max="15" step="1" placeholder="0-9" style="width:70px"><button id="tSetBusy">Set traffic</button><button id="tArea">Select area</button></div>
     <div class="row"><button id="tDraw">Draw lane</button><button id="tFinish">Finish lane</button></div>
     <div class="row"><button id="tAddPark">Add parked car</button><button id="tMovePark">Move car</button></div>
     <div class="row"><button id="tRotL">↺ 15°</button><button id="tRotR">↻ 15°</button></div>
@@ -48,7 +57,8 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
   let parkedById = new Map();
   let edits = emptyEdits();
   let undo = [];
-  let mode = 'select';        // select | draw | addPark | movePark
+  let mode = 'select';        // select | draw | addPark | movePark | area
+  let areaStart = null;       // first corner of an area selection
   let draft = [];             // points of the lane being drawn
   const selection = [];       // ordered keys: lane:<id>, new:<i>, conn:<i>, park:<id>, np:<i>
 
@@ -64,7 +74,7 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
 
   function status(msg) {
     const n = Object.keys(edits.lanes).length + edits.connections.length + edits.newLanes.length + Object.keys(edits.parked).length + edits.newParked.length;
-    const modeText = { select: '', draw: ` · drawing a lane (${draft.length} points; click the ground, then Finish)`, addPark: ' · click the ground to place a parked car', movePark: ' · click the ground to move the selected car' }[mode];
+    const modeText = { select: '', draw: ` · drawing a lane (${draft.length} points; click the ground, then Finish)`, addPark: ' · click the ground to place a parked car', movePark: ' · click the ground to move the selected car', area: areaStart ? ' · click the opposite corner of the area (Shift: add to selection)' : ' · click one corner of the area' }[mode];
     $('tStatus').textContent = (msg ? msg + ' ' : '') + `${selection.length} selected · ${n} edits saved in this browser${modeText}`;
   }
 
@@ -100,6 +110,12 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
   function parkedPose(car) {
     const e = edits.parked[car.id] || {};
     return { pos: e.pos || car.pos, dir: e.dir || car.dir, deleted: !!e.delete };
+  }
+  const laneTraffic = (lane) => (edits.lanes[lane.id] || {}).traffic ?? lane.traffic ?? DRAWN_TRAFFIC;
+  function trafficColour(v) {
+    if (!v) return 0x6a6a6a;
+    const t = Math.min(v, MAX_TRAFFIC) / MAX_TRAFFIC;
+    return new THREE.Color().setHSL(0.66 * (1 - t), 1, 0.5).getHex();
   }
   function connectionPoints(c) {
     const a = laneById.get(c.from), b = laneById.get(c.to);
@@ -148,14 +164,15 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
     const sel = new Set(selection);
     for (const lane of data.lanes) {
       const e = edits.lanes[lane.id] || {};
-      const colour = sel.has('lane:' + lane.id) ? COLOURS.selected : e.delete ? COLOURS.deleted : e.reverse ? COLOURS.reversed : e.shift || e.speed ? COLOURS.shifted : COLOURS.lane;
+      const heat = $('tHeat').checked;
+      const colour = sel.has('lane:' + lane.id) ? COLOURS.selected : e.delete ? COLOURS.deleted : heat ? trafficColour(laneTraffic(lane)) : e.reverse ? COLOURS.reversed : e.shift || e.speed || e.traffic != null ? COLOURS.shifted : COLOURS.lane;
       addPolyline(pos, col, lanePoints(lane), colour, !e.delete);
     }
     edits.connections.forEach((c, i) => {
       const pts = connectionPoints(c);
       if (pts) addPolyline(pos, col, pts, sel.has('conn:' + i) ? COLOURS.selected : COLOURS.connection, true);
     });
-    edits.newLanes.forEach((l, i) => addPolyline(pos, col, l.points, sel.has('new:' + i) ? COLOURS.selected : COLOURS.drawn, true));
+    edits.newLanes.forEach((l, i) => addPolyline(pos, col, l.points, sel.has('new:' + i) ? COLOURS.selected : $('tHeat').checked ? trafficColour(l.traffic ?? DRAWN_TRAFFIC) : COLOURS.drawn, true));
     if (draft.length) addPolyline(pos, col, draft.length > 1 ? draft : [draft[0], draft[0]], COLOURS.draft, true);
     for (const car of data.parked) {
       const p = parkedPose(car);
@@ -214,11 +231,11 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
       for (let k = 0; k + 1 < pts.length; k++) len += Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][2] - pts[k][2]);
       const speed = e.speed ?? lane.speed;
       const flags = ['delete', 'reverse'].filter((f) => e[f]).concat(e.shift ? [`shift ${e.shift > 0 ? '+' : ''}${e.shift} m`] : []);
-      return `lane ${id} · ${Math.round(speed * 3.6)} km/h · ${len.toFixed(0)} m · width ${lane.width} m · leads to ${lane.next.join(', ') || '—'}` + (flags.length ? ` · edited: ${flags.join(', ')}` : '');
+      return `lane ${id} · ${Math.round(speed * 3.6)} km/h · traffic ${laneTraffic(lane)}${e.traffic != null ? ` (Burnout ${lane.traffic})` : ''} · ${len.toFixed(0)} m · width ${lane.width} m · leads to ${lane.next.join(', ') || '—'}` + (flags.length ? ` · edited: ${flags.join(', ')}` : '');
     }
     if (kind === 'park') { const p = parkedPose(parkedById.get(id)); return `parked car ${id} at ${p.pos.map((v) => v.toFixed(1)).join(', ')}` + (p.deleted ? ' · deleted' : ''); }
     if (kind === 'np') return `new parked car ${id}`;
-    if (kind === 'new') return `drawn lane ${id} · ${edits.newLanes[+id].points.length} points`;
+    if (kind === 'new') return `drawn lane ${id} · ${edits.newLanes[+id].points.length} points · traffic ${edits.newLanes[+id].traffic ?? DRAWN_TRAFFIC}`;
     if (kind === 'conn') { const c = edits.connections[+id]; return `connection ${c.from} → ${c.to}`; }
     return key;
   }
@@ -232,6 +249,24 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
   // --- click handling (called by the viewer for clicks, not drags) ---
   function handleClick(e) {
     if (!$('tEdit').checked || !data) return false;
+    if (mode === 'area') {
+      const p = pickGround(e);
+      if (!p) { status('No ground there: load the units (visual or collision) under the spot first.'); return true; }
+      if (!areaStart) { areaStart = [p.x, p.y, p.z]; status(); return true; }
+      const [x0, x1] = [Math.min(areaStart[0], p.x), Math.max(areaStart[0], p.x)];
+      const [z0, z1] = [Math.min(areaStart[2], p.z), Math.max(areaStart[2], p.z)];
+      const inside = (pts) => pts.some((q) => q[0] >= x0 && q[0] <= x1 && q[2] >= z0 && q[2] <= z1);
+      if (!e.shiftKey && !e.ctrlKey) selection.length = 0;
+      const add = (key) => { if (!selection.includes(key)) selection.push(key); };
+      for (const lane of data.lanes) if (!(edits.lanes[lane.id] || {}).delete && inside(lanePoints(lane))) add('lane:' + lane.id);
+      edits.newLanes.forEach((l, i) => { if (inside(l.points)) add('new:' + i); });
+      mode = 'select';
+      areaStart = null;
+      redraw();
+      showInfo();
+      status(`Selected ${selection.length} lanes in the area.`);
+      return true;
+    }
     if (mode === 'draw' || mode === 'addPark' || mode === 'movePark') {
       const p = pickGround(e);
       if (!p) { status('No ground there: load the units (visual or collision) under the spot first.'); return true; }
@@ -278,7 +313,7 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
   // --- actions ---
   const selected = (kind) => selection.filter((k) => k.startsWith(kind + ':')).map((k) => k.slice(kind.length + 1));
   const laneEdit = (id) => (edits.lanes[id] = edits.lanes[id] || {});
-  function tidy(id) { const e = edits.lanes[id]; if (e && !e.delete && !e.reverse && !e.shift && e.speed == null) delete edits.lanes[id]; }
+  function tidy(id) { const e = edits.lanes[id]; if (e && !e.delete && !e.reverse && !e.shift && e.speed == null && e.traffic == null) delete edits.lanes[id]; }
 
   $('tShow').onchange = async () => {
     group.visible = $('tShow').checked;
@@ -340,6 +375,21 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
       for (const i of selected('new')) edits.newLanes[+i].speed = Math.round(kmh / 3.6 * 10) / 10;
     });
   };
+  $('tHeat').onchange = redraw;
+  $('tSetBusy').onclick = () => {
+    const raw = $('tBusy').value;
+    const v = Math.round(+raw);
+    if (raw === '' || !(v >= 0 && v <= 15)) { status("Enter a traffic level first: 0 (no cars start there) to 9 (Burnout's busiest)."); return; }
+    if (!selection.some((k) => k.startsWith('lane:') || k.startsWith('new:'))) { status('Select lanes first (click, Shift+click, or Select area).'); return; }
+    change(() => {
+      for (const id of selected('lane')) {
+        const lane = laneById.get(id);
+        if (lane && lane.traffic === v) { delete laneEdit(id).traffic; tidy(id); } else laneEdit(id).traffic = v;
+      }
+      for (const i of selected('new')) edits.newLanes[+i].traffic = v;
+    });
+  };
+  $('tArea').onclick = () => { if (!$('tEdit').checked) { status('Tick “Edit traffic” first.'); return; } mode = 'area'; areaStart = null; status(); };
   $('tDraw').onclick = () => { if (!$('tEdit').checked) return; mode = 'draw'; draft = []; selection.length = 0; redraw(); };
   const finish = () => {
     if (mode !== 'draw') return;
@@ -347,7 +397,7 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
     mode = 'select';
     draft = [];
     if (pts.length < 2) { redraw(); status('A lane needs at least two points.'); return; }
-    change(() => edits.newLanes.push({ points: pts, width: 4.5, speed: 13.4 }));
+    change(() => edits.newLanes.push({ points: pts, width: 4.5, speed: 13.4, traffic: DRAWN_TRAFFIC }));
   };
   $('tFinish').onclick = finish;
   $('tAddPark').onclick = () => { if (!$('tEdit').checked) return; mode = 'addPark'; status(); };
@@ -387,7 +437,7 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
   addEventListener('keydown', (e) => {
     if (!$('tEdit').checked || e.target.tagName === 'INPUT') return;
     if (e.key === 'Enter') finish();
-    if (e.key === 'Escape') { mode = 'select'; draft = []; redraw(); }
+    if (e.key === 'Escape') { mode = 'select'; draft = []; areaStart = null; redraw(); }
     if (e.key === 'Backspace' && mode === 'draw') { draft.pop(); redraw(); }
     if ((e.key === 'Delete') && selection.length) $('tDelete').onclick();
     if (e.key === 'r' || e.key === 'R') $('tReverse').onclick();

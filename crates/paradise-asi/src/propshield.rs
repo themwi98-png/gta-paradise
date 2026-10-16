@@ -15,13 +15,21 @@
 //! GTA's own crash damage applies; traffic cruising alongside doesn't
 //! count), and an impact while touching another vehicle is always a crash.
 //!
-//! Every frame, loose objects (props and broken pieces of them) in the space
-//! just ahead of the moving car's nose are swept aside, away from the car's
-//! centre line (ones dead ahead go up and over), so nothing gets pushed
-//! along unseen and slips under the car. Heavy props (lamp posts and
-//! benches, by model: GTA doesn't tell scripts an object's mass) are thrown
-//! well clear: hard to the side, or high over the car and off to one side,
-//! so they don't land back in its path.
+//! Going through props is only a visual effect: they never change the
+//! car's motion. Props still collide with it (so GTA knocks standing ones
+//! over, and pieces bounce off it), but the moment a prop starts touching
+//! the car, the car's speed, direction and spin go back to what they were
+//! the frame before. A standing prop the car hits is then let pass through
+//! it for GHOST_MS while it's thrown clear, so it can't drag along with the
+//! car. (Not while another vehicle is touching: that's a crash.)
+//!
+//! Every frame, loose objects (thrown props and broken pieces) in the space
+//! just ahead of the moving car's nose, along the way it's moving, are swept
+//! aside, away from its line (ones dead ahead go up and over), so nothing
+//! gets pushed along unseen and slips under the car. Heavy props (lamp posts
+//! and benches, by model: GTA doesn't tell scripts an object's mass) are
+//! thrown well clear: hard to the side, or high over the car and off to one
+//! side, so they don't land back in its path.
 
 use crate::natives as n;
 use crate::shv::Vec3;
@@ -50,13 +58,29 @@ pub struct PropShield {
     loose: Vec<([f32; 3], u32)>,
     /// Models of the heavy props, which get the strong sweep.
     heavy: std::collections::HashSet<u32>,
+    /// Models of all the props.
+    models: std::collections::HashSet<u32>,
+    /// Props knocked loose (hit or thrown): they no longer stand.
+    loose_props: std::collections::HashSet<i32>,
+    /// Props passing through the car until then (game ms).
+    ghost: HashMap<i32, i32>,
+    /// Props touching the car last frame.
+    touching: std::collections::HashSet<i32>,
+    /// The car, its velocity, spin and orientation last frame.
+    last: Option<(i32, Vec3, [f32; 3], crate::air::Frame)>,
 }
+
+/// How long (ms) a standing prop the car hits passes through it.
+const GHOST_MS: i32 = 500;
+/// A prop moving slower than this (m/s) that was never knocked loose is
+/// still standing.
+const STANDING_SPEED: f32 = 0.5;
 
 /// Prop models (name contains one of these) that get the strong sweep.
 const HEAVY: [&str; 2] = ["streetlight", "bench"];
 
-/// The sweep zone ahead of the car's centre, in car space (m): forward
-/// from..to, half width, and height either way.
+/// The sweep zone ahead of the car's centre, along the way it moves (m):
+/// ahead from..to, half width, and height either way.
 const SWEEP_FROM: f32 = 1.5;
 const SWEEP_TO: f32 = 5.0;
 /// The zone reaches further ahead by this much (m) per m/s of speed.
@@ -87,6 +111,9 @@ impl PropShield {
                 let model = f.get(3).map(|m| joaat(m)).unwrap_or(0);
                 if f.get(3).is_some_and(|m| HEAVY.iter().any(|h| m.to_ascii_lowercase().contains(h))) {
                     s.heavy.insert(model);
+                }
+                if model != 0 {
+                    s.models.insert(model);
                 }
                 s.cells.entry(cell(v[0], v[1])).or_default().push(([v[0], v[1], v[2]], model));
                 n += 1;
@@ -182,32 +209,72 @@ impl PropShield {
 }
 
 impl PropShield {
-    /// Every frame: notes loose objects near the car (for the shield) and
-    /// throws those about to go under the car's nose.
+    /// Every frame: notes loose objects near the car (for the shield), keeps
+    /// props from changing the car's motion, and throws loose objects about
+    /// to go under its nose.
     pub fn sweep(&mut self, veh: i32, now: i32) {
         self.thrown.retain(|_, t| now - *t < 600);
+        self.ghost.retain(|_, t| *t > now);
         self.loose.clear();
         if veh == 0 {
+            self.last = None;
+            self.touching.clear();
             return;
         }
-        let local_v = n::get_entity_speed_vector_relative(veh);
-        let sweeping = local_v.y >= SWEEP_SPEED;
         let reach = NEAR + n::get_entity_speed(veh) * LOOKAHEAD;
         let p = n::get_entity_coords(veh);
-        let f = n::get_entity_forward_vector(veh);
-        let (fx, fy) = {
-            let l = f.x.hypot(f.y).max(1e-3);
-            (f.x / l, f.y / l)
-        };
         let v = n::get_entity_velocity(veh);
+        let frame = n::get_entity_matrix(veh);
+        let w = match self.last {
+            Some((was, _, _, f)) if was == veh => crate::air::world_spin(f, frame, n::get_frame_time()),
+            _ => [0.0; 3],
+        };
+        // The car's motion before anything touched it this frame.
+        let before = self.last.filter(|l| l.0 == veh).map(|l| (l.1, l.2));
         let speed = v.x.hypot(v.y);
+        let sweeping = speed >= SWEEP_SPEED;
+        // Along the way the car moves (sliding sideways too).
+        let (fx, fy) = (v.x / speed.max(1e-3), v.y / speed.max(1e-3));
         let sweep_to = SWEEP_TO + speed * SWEEP_TO_PER_SPEED;
-        for o in crate::shv::all_objects() {
+        let objects = crate::shv::all_objects();
+        let mut touching = std::collections::HashSet::new();
+        let mut struck = false;
+        for &o in &objects {
             let q = n::get_entity_coords(o);
             let (dx, dy, dz) = (q.x - p.x, q.y - p.y, q.z - p.z);
             let d2 = dx * dx + dy * dy;
-            if d2 <= reach * reach && dz.abs() < 5.0 {
-                self.loose.push(([q.x, q.y, q.z], n::get_entity_model(o)));
+            if d2 > reach * reach || dz.abs() >= 5.0 {
+                continue;
+            }
+            let model = n::get_entity_model(o);
+            self.loose.push(([q.x, q.y, q.z], model));
+            let is_prop = self.models.contains(&model) || self.loose_props.contains(&o);
+            if self.ghost.contains_key(&o) {
+                n::set_entity_no_collision_entity(veh, o, true);
+                n::set_entity_no_collision_entity(o, veh, true);
+            } else if is_prop
+                && d2 < 8.0 * 8.0
+                // Touching, or (a fast hit GTA may not report as touching) a
+                // standing prop suddenly flying right next to the car.
+                && (n::is_entity_touching_entity(veh, o) || (!self.loose_props.contains(&o) && d2 < 6.0 * 6.0 && n::get_entity_speed(o) > 2.0))
+            {
+                touching.insert(o);
+                if !self.touching.contains(&o) {
+                    struck = true;
+                    if !self.loose_props.contains(&o) {
+                        // A standing prop hit: knocked over, through the car,
+                        // thrown clear along the way the car was going.
+                        self.loose_props.insert(o);
+                        self.ghost.insert(o, now + GHOST_MS);
+                        n::set_entity_no_collision_entity(veh, o, true);
+                        n::set_entity_no_collision_entity(o, veh, true);
+                        let bv = before.map_or(v, |b| b.0);
+                        let l = bv.x.hypot(bv.y).max(1e-3);
+                        let (bx, by) = (bv.x / l, bv.y / l);
+                        throw(o, self.heavy.contains(&model), dx * by - dy * bx, bv, (bx, by));
+                        self.thrown.insert(o, now);
+                    }
+                }
             }
             if !sweeping || d2 > sweep_to * sweep_to + SWEEP_HALF_WIDTH * SWEEP_HALF_WIDTH || dz.abs() > SWEEP_HEIGHT {
                 continue;
@@ -215,14 +282,37 @@ impl PropShield {
             if self.thrown.contains_key(&o) {
                 continue;
             }
+            // Standing props stay put until the car hits them.
+            if self.models.contains(&model) && !self.loose_props.contains(&o) && n::get_entity_speed(o) < STANDING_SPEED {
+                continue;
+            }
             let ahead = dx * fx + dy * fy;
             let side = dx * fy - dy * fx;
             if ahead < SWEEP_FROM || ahead > sweep_to || side.abs() > SWEEP_HALF_WIDTH {
                 continue;
             }
-            throw(o, self.heavy.contains(&n::get_entity_model(o)), side, v, (fx, fy));
+            throw(o, self.heavy.contains(&model), side, v, (fx, fy));
             self.thrown.insert(o, now);
+            if self.models.contains(&model) {
+                self.loose_props.insert(o);
+            }
         }
+        self.touching = touching;
+        // Forget objects that are gone.
+        if self.loose_props.len() > 64 {
+            let alive: std::collections::HashSet<i32> = objects.iter().copied().collect();
+            self.loose_props.retain(|o| alive.contains(o));
+        }
+        // A prop's touch never changes the car's motion (a vehicle's does).
+        let (mut v, mut w) = (v, w);
+        if struck && !touching_vehicle(veh) {
+            if let Some((bv, bw)) = before {
+                n::set_entity_velocity(veh, bv.x, bv.y, bv.z);
+                n::set_entity_angular_velocity(veh, bw[0], bw[1], bw[2]);
+                (v, w) = (bv, bw);
+            }
+        }
+        self.last = Some((veh, v, w, frame));
     }
 
     /// A prop the car just knocked over (it stood fixed until hit, so the

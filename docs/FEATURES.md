@@ -6,7 +6,7 @@ it and Burnout-style driving on top.
 
 **Status key:** ✅ confirmed working in game · 🟡 needs further testing · ⬜ not done yet / idea
 
-Last updated: 2026-10-12
+Last updated: 2026-10-15 (v0.2.0)
 
 
 ## The map
@@ -35,8 +35,8 @@ Last updated: 2026-10-12
 
 | Feature | Status | Notes |
 |---|---|---|
-| Traffic | ✅ | GTA cars drive Burnout's road network, converted to two-way GTA roads (every road reachable from every other). |
-| Manual traffic fixes | ✅ (tool) | Viewer traffic editor (reverse / delete / shift lanes, set speed, connect, draw new lanes, edit parked cars). No edits made yet. |
+| Traffic | ✅ | GTA cars drive Burnout's road network, converted to two-way GTA roads (every road reachable from every other). How busy each road is follows Burnout's own traffic flow per lane: busy downtown, quiet country roads. `@traffic` sets the overall amount (0 = empty roads, up to 3). |
+| Manual traffic fixes | ✅ (tool) | Viewer traffic editor (reverse / delete / shift lanes, set speed, set traffic level, connect, draw new lanes, edit parked cars; colour by traffic, select an area). |
 | Intersections marked for the AI | ✅ | Junction and dead-end markers like Rockstar's, so AI turns and yields properly. |
 | Parked cars | ✅ | Burnout's 952 parked cars as GTA parked-car spawners, on the ground. |
 | Pedestrians | ✅ | Walkable navmesh generated for the whole city (pavements, plazas, island). |
@@ -51,7 +51,8 @@ Last updated: 2026-10-12
 | Feature | Status | Notes |
 |---|---|---|
 | Police chase on Paradise roads | 🟡 | All of Paradise's road data kept loaded, so police dispatched from far away can route to you. Needs further testing. |
-| Faster, more aggressive pursuers | ✅ | Top skill and aggression, 2× engine power, +50 % top speed (`@police_power`, `@police_top`). |
+| Faster, more aggressive pursuers | ✅ | Top skill and aggression, 2× engine power, +100 % top speed (`@police_power`, `@police_top`). |
+| Police survive their own crashes | 🟡 | Pursuing police cars don't catch fire, their engines keep running, and their drivers aren't killed or thrown out (`@police_tough`). |
 | Police stay in their cars while you drive | ✅ | They still get out if you're on foot. |
 | Police notice you when in plain sight | ✅ | A police car within 120 m with a clear view reports you. |
 | Police follow you off the roads | 🟡 | Police route along traffic lanes only. When you drive more than 40 m from any lane, police cars within 450 m are sent straight at you (by road until within 250 m), and go back to normal pursuit once you're back on the roads. Roads Burnout has no lanes on can be given lanes with the viewer's traffic editor. |
@@ -61,23 +62,29 @@ Last updated: 2026-10-12
 
 | Feature | Status | Notes |
 |---|---|---|
-| Much more crash damage on all cars | ✅ | All 791 vehicles (base game + DLC): dents 6×, body damage 4×, engine damage 3× (`HANDLING` in `crates/bpx/src/gtadata.rs`). |
-| Faster cars | ✅ | Top speed 1.35×, engine power 1.5×, brakes 1.25×. |
-| More grip | ✅ | Cornering and sliding grip 1.4× (was 1.2×), wheelspin cut to 0.6×. |
-| Heavier jumps | ✅ | Cars in the air fall at 2× gravity (`@air_gravity`). |
-| Downforce | ✅ | Fast cars on the ground are pressed down harder, growing with speed squared: +1 g at ~180 km/h, at most +3 g (`@downforce`). |
+| Much more crash damage on all cars | ✅ | All 791 vehicles (base game + DLC): deep dents on every car (trucks no longer tear apart), body damage 5×, engine damage half GTA's, so battered cars keep driving (`HANDLING` in `crates/bpx/src/gtadata.rs`). |
+| Faster cars, stronger brakes | ✅ | Top speed 1.35×, engine power 1.35× (live: `@car_top_speed`, `@car_power`), brakes 1.75× (`@car_brakes`, built in by the setup). |
+| Grip | ✅ | Cornering and sliding grip 1.2× (`@car_grip`, built in by the setup), wheelspin cut to 0.6×. |
+| Heavier jumps | ✅ | Cars in the air fall at 3× gravity (`@air_gravity`). |
+| Steady flight | ✅ | In the air the car keeps its nose the way it's flying (following the arc partway) and its wheels down, instead of pitching or spinning (`@air_control`). |
+| Barrel rolls | ✅ | Leaving a split ramp rolling (either way), the car turns exactly once and lands on its wheels. Straight jumps don't count (`@barrel_roll`, `@barrel_roll_trigger`). |
+| Downforce | ✅ | Fast cars on the ground are pressed down harder, growing with speed squared: +0.75 g at ~180 km/h, at most +3 g (`@downforce`). |
+| Drift assist | ✅ | Holds a slide at a sensible angle and softens the catch so it doesn't flick into a spin (`@drift_assist`, `@drift_angle`). |
+| Brake to drift | 🟡 | Tapping the brake while moving works as the handbrake for a moment, then as the normal brake if held. With the handbrake already held, or pressed during it, it's the normal brake (`@brake_drift`, `@brake_drift_time`, `@brake_drift_speed`). |
+| Off-road as fast as the road | ✅ | No ground type (sand, dirt, gravel, grass...) slows the car or caps its top speed; grip still varies. |
 | Extra dents and smashed glass on hard hits | ✅ | From about 40 km/h of sudden speed loss (`@impact_speed`). |
-| **Wrecks** | ✅ | Hard crash (≈65 km/h sudden speed loss, `@wreck_speed`): car crumpled all round, glass and panels gone, explodes, 5 s slow-motion crash cam with "WRECKED", then you respawn on the nearest road in a fresh copy of the same car (colours, upgrades, plate), already rolling. No penalty. |
-| Slow motion starts just before the impact | ✅ | Only when a wreck is all but certain: lines traced straight ahead along your path, within the car's width, must agree (2 of 3) on a near head-on hit at least 25 % over the wreck threshold within 0.12 s. Otherwise slow-mo starts at the impact. Steering clear or a non-wreck hit brings normal speed back and shows a yellow "DRIVEAWAY" for 2 s (`@precrash`, `@precrash_lead`). |
+| **Wrecks** | ✅ | Hard crash (≈90 km/h sudden speed loss, `@wreck_speed`): car crumpled all round, glass and panels gone, explodes, 5 s slow-motion crash cam with "WRECKED" (GTA's own lettering and sound, colours drained a little, `@wreck_desat`), then you respawn on the nearest road in a fresh copy of the same car (colours, upgrades, plate), already rolling. No penalty. |
+| Slow motion starts just before the impact | ✅ | Only when a wreck is all but certain: lines traced straight ahead along your path, within the car's width, must agree (2 of 3) on a near head-on hit at least 25 % over the wreck threshold within 0.12 s. Steering clear brings normal speed back and shows a yellow "DRIVEAWAY" for 2 s (`@precrash`, `@precrash_lead`). |
+| Crash camera on big hits | ✅ | Any hit of at least 72 km/h sudden speed loss shows the slow-motion crash camera from the impact for 1.5 s; if it wasn't a wreck, DRIVEAWAY (`@crash_cam_speed`, `@crash_cam_hold`). |
 | Wreck scene cleared | ✅ | Once the screen fades after a wreck, NPCs, vehicles and fires within 6 m of the impact point and of where the wreck ended up are removed, and again around your new car just before the screen comes back. Vehicles and people within 10 m at the impact, or touched by the wreck as it tumbles, are removed wherever they were thrown (`@wreck_clear`; 0 = off). |
-| Wreck when the car is finished | ✅ | On fire, engine dead, undrivable, or jammed (wheels down, accelerator held, not moving) for 2.5 s also counts as a wreck. Being upside down never does: hold steering to roll the car back over (`@wreck_damage`, `@wreck_stuck`). |
-| No flying through the windscreen | ✅ | |
-| **Boost** | ✅ | Hold A (controller) / X (keyboard): exhaust flames, extra engine power and boost sound; up to ~1.8× the car's top speed (105–210 mph). Gauge bottom right, lasts 7 s. Locked when empty until you let go. |
+| Wreck when the car is finished | ✅ | On fire, engine dead or below 100 health (`@wreck_engine`), undrivable, or jammed (wheels down, accelerator held, not moving) for 2.5 s also counts as a wreck. A wheel knocked out of line can count too (`@wreck_wheel`, off by default). Being upside down never does: hold steering to roll the car back over (`@wreck_damage`, `@wreck_stuck`). Your tyres can't burst and your axles don't bend from knocks (`@strong_tyres`, `@strong_axles`). |
+| No flying through the windscreen | ✅ | Drivers also can't die in a crash, so "wasted" never plays on top of a wreck. |
+| **Boost** | ✅ | Hold A (controller) / X (keyboard): exhaust flames, extra engine power and boost sound; up to ~1.8× the car's top speed (105 mph to about 300 mph). Gauge bottom right, lasts 15 s. Locked when empty until you let go. |
 | Earning boost | ✅ | Driving fast, oncoming lane / wrong way, near misses (a car passing within about 2.5 m; oncoming worth more), drifts, air time and big air. |
-| Props don't hurt your car | ✅ | Near a placed prop the car can't be damaged or dented; hitting one never wrecks you and keeps 90 % of your speed (`@prop_keep`). |
+| Props don't hurt or slow your car | ✅ | Near a placed prop the car can't be damaged or dented, and hitting one never wrecks you. Props never change the car's speed, direction or spin: the moment one touches the car, its motion is put back to just before (not while touching another vehicle). |
 | Vehicles always hurt | 🟡 | Props never hurt the car (100 %). The protection drops just before another vehicle hits you (only vehicles closing in, not traffic alongside), and a hit while touching a vehicle is always a real crash. |
-| Props get tossed | ✅ | A prop you hit is thrown up and over the car whatever its weight (benches etc. fly like boxes). |
-| Nothing gets stuck under the car | 🟡 | While moving, any loose prop or broken piece just ahead of the nose (further ahead the faster you go) is swept aside, away from the car's centre line (dead ahead: up and over). Lamp posts and benches are thrown much harder: well out to the side, or high over the car and off to one side, both when swept and when knocked over by the car (they stand fixed until hit). GTA doesn't expose mass, so heavy props are picked by model. |
+| Props get tossed | ✅ | A prop you hit passes through the car as it's thrown clear (up and over, or well out to the side for lamp posts and benches); falling debris bounces off the car. |
+| Nothing gets stuck under the car | 🟡 | While moving, any loose prop or broken piece just ahead of the nose, along the way the car is moving (further ahead the faster you go), is swept aside. GTA doesn't expose mass, so heavy props are picked by model. |
 | Takedowns | ⬜ | Burnout mechanic, not started. |
 
 ## Player experience
@@ -86,9 +93,9 @@ Last updated: 2026-10-12
 |---|---|---|
 | Straight into Paradise on load | ✅ | Screen stays black through GTA's arrival scene (e.g. Vespucci pull-ups); you appear at `@start`. |
 | Skip the landing menu | N/A | Not modded: use GTA's own startup option (Steam launch options / in-game landing page setting) to go straight to Story Mode. |
-| Wasted → respawn nearby | ✅ | GTA's normal "wasted" plays (with its penalties), then you appear on foot near where you died instead of a Los Santos hospital. |
+| Wasted → respawn nearby | ✅ | GTA's normal "wasted" plays (with its penalties), then you appear on foot near where you died instead of a Los Santos hospital. The time of day stays where it was. |
 | Busted → respawn nearby | 🟡 | Same for arrests (penalties kept). |
-| Rescue from falling through the map | ✅ | 1.5 s with nothing below (not swimming / flying / boating) puts you back at `@start`. |
+| Rescue from falling through the map | ✅ | 1.5 s with nothing below (not swimming / flying / boating) puts you back near the last place you had ground under you. |
 | Swimming and boats | ✅ | Water no longer triggers the rescue. |
 
 ### Keys (in game)
@@ -141,8 +148,8 @@ on start, so saved edits always show and survive rebuilds.
 
 ## Settings (`paradise.ini` in the GTA folder)
 
-Re-read every few seconds while playing. Running the setup again keeps your
-values (new settings arrive with their defaults); the development install
+Re-read every few seconds while playing. Running the setup again keeps the values you
+changed (untouched ones move to new defaults, new settings arrive with theirs); the development install
 script overwrites it with the project's copy.
 
 | Setting | Now | Meaning |
@@ -150,7 +157,7 @@ script overwrites it with the project's copy.
 | `@mode` | paradise | `off` = normal GTA |
 | `@start` | 994.9 862.7 25.2 | Start / rescue spot |
 | `@wreck` | on | Burnout wrecks |
-| `@wreck_speed` | 18 | Sudden speed loss (m/s) that wrecks |
+| `@wreck_speed` | 25 | Sudden speed loss (m/s) that wrecks |
 | `@impact_speed` | 11 | Sudden speed loss for extra dents |
 | `@wreck_explode` | on | Car blows up in a wreck |
 | `@respawn_speed` | 12 | Speed of the fresh car (m/s) |
@@ -159,20 +166,33 @@ script overwrites it with the project's copy.
 | `@crash_cam` | on | Orbiting crash camera |
 | `@precrash` | on | Start the slow-mo crash camera just before a wreck |
 | `@precrash_lead` | 0.12 | How far ahead (game seconds) a wreck is seen coming |
+| `@crash_cam_speed`, `@crash_cam_hold` | 20, 1.5 | Hits this hard (m/s) show the crash camera for this long (s) |
+| `@wreck_desat` | 0.6 | Colour drained during a wreck (0 = none, 1 = black and white) |
 | `@wreck_damage` | on | Wreck when on fire / dead / jammed |
 | `@wreck_stuck` | 2.5 | Seconds jammed before a wreck |
+| `@wreck_engine` | 100 | Engine health below which the car is wrecked |
+| `@wreck_wheel` | 0 | Wreck when a wheel is this many cm out of line (0 = off) |
+| `@strong_axles`, `@strong_tyres` | on, on | Axles don't bend from knocks; tyres can't burst |
 | `@perf` | on | Log the plugin's cost per frame to `paradise.log` every 15 s |
 | `@debug_log` | off | Old position probe and driving trace (debugging) |
-| `@prop_keep` | 0.9 | Speed kept when hitting a prop |
+| `@prop_keep` | 1 | Speed kept on a prop hit the plugin couldn't undo (fallback) |
 | `@wreck_crush`, `@wreck_crush_rounds` | 8000, 8 | How mangled wrecked cars get |
 | `@wreck_clear` | 6 | Radius (m) cleared of NPCs, vehicles and fires after a wreck (0 = off) |
-| `@police_power`, `@police_top` | 2, 50 | Pursuing police engine power, extra top speed % |
-| `@air_gravity` | 2 | Gravity on cars in the air |
-| `@downforce` | 1 | Extra g on fast cars at ~180 km/h |
+| `@police_power`, `@police_top` | 2, 100 | Pursuing police engine power, extra top speed % |
+| `@police_tough` | on | Police cars survive their own crashes |
+| `@traffic` | 1 | Amount of traffic (0 = empty roads, up to 3) |
+| `@car_top_speed`, `@car_power` | 1.35, 1.35 | Every car's top speed and engine power, times GTA's |
+| `@car_grip`, `@car_brakes` | 1.2, 1.75 | Grip and braking, times GTA's (built in: re-run the setup after changing) |
+| `@air_gravity` | 3 | Gravity on cars in the air |
+| `@air_control` | 0.7 | How steady cars stay in the air (0 = off, 1 = held) |
+| `@barrel_roll`, `@barrel_roll_trigger` | on, 90 | Barrel rolls off split ramps; how hard a ramp must roll you (deg/s) |
+| `@downforce` | 0.75 | Extra g on fast cars at ~180 km/h |
+| `@drift_assist`, `@drift_angle` | 1.1, 45 | Drift help (0 = off, up to 3); largest drift angle |
+| `@brake_drift`, `@brake_drift_time`, `@brake_drift_speed` | on, 0.5, 2.2 | Brake to drift; how long a press is the handbrake (s); from this speed (m/s) |
 | `@boost` | on | Boost |
 | `@boost_accel` | 9 | Boost acceleration (m/s²) |
-| `@boost_top`, `@boost_min_top`, `@boost_max_top` | 1.8, 47, 95 | Boosted top speed (× car top, min/max m/s) |
-| `@boost_seconds` | 7 | Full gauge duration |
+| `@boost_top`, `@boost_min_top`, `@boost_max_top` | 1.8, 47, 135 | Boosted top speed (× car top, min/max m/s) |
+| `@boost_seconds` | 15 | Full gauge duration |
 | `@boost_fill` | 1.5 | Gauge refill rate |
 
 ---

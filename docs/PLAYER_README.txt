@@ -46,7 +46,8 @@ UPDATING
 --------
 
 Download the new version, unzip it, and run its paradise-setup.exe. Your
-settings in paradise.ini (in the GTA V folder) are kept.
+settings in paradise.ini (in the GTA V folder) are kept; settings you never
+changed move to the new defaults.
 
 
 SETTINGS

@@ -112,9 +112,9 @@ fn drape(pts: &[[f32; 3]], floors: &crate::props::Floors) -> Vec<[f32; 3]> {
 /// parked car id "hull:index":
 ///
 /// ```json
-/// { "lanes": { "217:36": { "reverse": true, "delete": false, "shift": 0.5, "speed": 13.4 } },
+/// { "lanes": { "217:36": { "reverse": true, "delete": false, "shift": 0.5, "speed": 13.4, "traffic": 6 } },
 ///   "connections": [ { "from": "217:36", "to": "217:40" } ],
-///   "newLanes": [ { "points": [[x, y, z], ...], "width": 4.5, "speed": 13.4 } ],
+///   "newLanes": [ { "points": [[x, y, z], ...], "width": 4.5, "speed": 13.4, "traffic": 5 } ],
 ///   "parked": { "12:3": { "delete": true }, "12:4": { "pos": [x, y, z], "dir": [dx, dz] } },
 ///   "newParked": [ { "pos": [x, y, z], "dir": [dx, dz] } ] }
 /// ```
@@ -122,6 +122,9 @@ fn drape(pts: &[[f32; 3]], floors: &crate::props::Floors) -> Vec<[f32; 3]> {
 /// `shift` moves a lane sideways (metres, + = to the right of its driving
 /// direction). A connection is a short lane from one lane's end to another's
 /// start. Drawn lanes snap to lane ends / starts within SNAP metres.
+/// `traffic` is how busy a lane is, in Burnout's own unit (vehicles per
+/// minute, 0 = none start there; Burnout uses 0-9); a connection takes the
+/// busier of its two lanes, a drawn lane DRAWN_TRAFFIC unless set.
 pub struct TrafficEdits {
     doc: serde_json::Value,
     path: PathBuf,
@@ -170,8 +173,11 @@ fn set_transform(m: &mut [f32; 16], pos: Option<[f32; 3]>, dir: Option<[f32; 2]>
     }
 }
 
-fn blank_section(rungs: Vec<[[f32; 3]; 2]>, speed: f32) -> Section {
-    Section { rungs, forward: Vec::new(), backward: Vec::new(), left: Vec::new(), right: Vec::new(), speed, length: 0.0, turn_left_prob: 0, turn_right_prob: 0 }
+/// How busy a drawn lane is when the edit doesn't say (Burnout's middle value).
+const DRAWN_TRAFFIC: u16 = 5;
+
+fn blank_section(rungs: Vec<[[f32; 3]; 2]>, speed: f32, traffic: u16) -> Section {
+    Section { rungs, forward: Vec::new(), backward: Vec::new(), left: Vec::new(), right: Vec::new(), speed, length: 0.0, turn_left_prob: 0, turn_right_prob: 0, vehicles_per_minute: traffic }
 }
 
 impl TrafficEdits {
@@ -187,7 +193,7 @@ impl TrafficEdits {
 
     /// Applies the edits to Burnout's traffic (before any placement).
     pub fn apply(&self, t: &mut Traffic) {
-        let (mut reversed, mut deleted, mut shifted, mut speeds) = (0, 0, 0, 0);
+        let (mut reversed, mut deleted, mut shifted, mut speeds, mut busy) = (0, 0, 0, 0, 0);
         let mut deleted_ids = HashSet::new();
         if let Some(lanes) = self.doc["lanes"].as_object() {
             for (id, e) in lanes {
@@ -232,6 +238,10 @@ impl TrafficEdits {
                     sec.speed = v as f32;
                     speeds += 1;
                 }
+                if let Some(v) = e["traffic"].as_f64() {
+                    sec.vehicles_per_minute = v.round().clamp(0.0, 99.0) as u16;
+                    busy += 1;
+                }
             }
         }
         for hull in &mut t.hulls {
@@ -246,7 +256,7 @@ impl TrafficEdits {
         let mut added: Vec<Section> = Vec::new();
         for c in self.doc["connections"].as_array().into_iter().flatten() {
             let (Some(a), Some(b)) = (c["from"].as_str().and_then(|i| lane(t, i)), c["to"].as_str().and_then(|i| lane(t, i))) else { continue };
-            added.push(blank_section(vec![*a.rungs.last().unwrap(), b.rungs[0]], a.speed.min(b.speed)));
+            added.push(blank_section(vec![*a.rungs.last().unwrap(), b.rungs[0]], a.speed.min(b.speed), a.vehicles_per_minute.max(b.vehicles_per_minute)));
         }
         let connections = added.len();
         let ends: Vec<([f32; 3], [[f32; 3]; 2])> = t.hulls.iter().flat_map(|h| &h.sections).filter_map(|s| s.rungs.last().map(|r| (centre(r), *r))).collect();
@@ -297,7 +307,8 @@ impl TrafficEdits {
             if let Some(r) = nearest(&starts, pts[n - 1]) {
                 rungs[n - 1] = r;
             }
-            added.push(blank_section(rungs, l["speed"].as_f64().unwrap_or(13.4) as f32));
+            let traffic = l["traffic"].as_f64().map_or(DRAWN_TRAFFIC, |v| v.round().clamp(0.0, 99.0) as u16);
+            added.push(blank_section(rungs, l["speed"].as_f64().unwrap_or(13.4) as f32, traffic));
         }
         let drawn = added.len() - connections;
         if let Some(h0) = t.hulls.first_mut() {
@@ -342,7 +353,7 @@ impl TrafficEdits {
             }
         }
         eprintln!(
-            "traffic edits ({}): {reversed} reversed, {deleted} deleted, {shifted} shifted, {speeds} speeds, {connections} connections, {drawn} drawn lanes; parked {parked_deleted} deleted, {parked_moved} moved, {parked_added} added",
+            "traffic edits ({}): {reversed} reversed, {deleted} deleted, {shifted} shifted, {speeds} speeds, {busy} traffic levels, {connections} connections, {drawn} drawn lanes; parked {parked_deleted} deleted, {parked_moved} moved, {parked_added} added",
             self.path.display()
         );
     }

@@ -43,9 +43,11 @@
 //!   matched to the collision geometry offline.
 //! - Everything else is logged to `paradise.log` in the game folder.
 
+mod air;
 mod boost;
 mod perf;
 mod chase;
+mod drift;
 mod natives;
 mod overlay;
 mod physics;
@@ -124,6 +126,13 @@ struct Settings {
     air_gravity: f32,
     /// Extra downforce (g) on fast cars at ~180 km/h.
     downforce: f32,
+    drift: drift::DriftSettings,
+    air: air::AirSettings,
+    /// Cars' top speed and engine power, times GTA's.
+    car_top: f32,
+    car_power: f32,
+    /// Amount of traffic, times normal (where it goes is set per road).
+    traffic: f32,
     police: chase::PoliceSettings,
     /// Write the position probe and driving trace (debugging).
     debug_log: bool,
@@ -133,7 +142,7 @@ struct Settings {
 
 fn load_settings() -> Settings {
     let text = std::fs::read_to_string("paradise.ini").unwrap_or_default();
-    let mut s = Settings { paradise: true, start: None, wreck: Default::default(), boost: Default::default(), air_gravity: 3.0, downforce: 1.0, police: Default::default(), debug_log: false, perf: true };
+    let mut s = Settings { paradise: true, start: None, wreck: Default::default(), boost: Default::default(), air_gravity: 3.0, downforce: 0.75, drift: Default::default(), air: Default::default(), car_top: physics::BAKED_TOP, car_power: physics::BAKED_POWER, traffic: 1.0, police: Default::default(), debug_log: false, perf: true };
     for line in text.lines() {
         let p: Vec<&str> = line.split_whitespace().collect();
         let on = |v: &str| !(v.eq_ignore_ascii_case("off") || v == "0" || v.eq_ignore_ascii_case("false"));
@@ -157,19 +166,38 @@ fn load_settings() -> Settings {
             ["@slowmo", v, ..] => w.slowmo = num(v, w.slowmo).clamp(0.05, 1.0),
             ["@crash_cam", v, ..] => w.crash_cam = on(v),
             ["@precrash", v, ..] => w.precrash = on(v),
+            ["@crash_cam_speed", v, ..] => w.crash_cam_dv = num(v, w.crash_cam_dv).max(1.0),
+            ["@crash_cam_hold", v, ..] => w.crash_cam_hold = num(v, w.crash_cam_hold).max(0.1),
             ["@precrash_lead", v, ..] => w.precrash_lead = num(v, w.precrash_lead).clamp(0.05, 1.0),
             ["@wreck_damage", v, ..] => w.damage_wreck = on(v),
             ["@wreck_stuck", v, ..] => w.stuck_time = num(v, w.stuck_time),
+            ["@wreck_wheel", v, ..] => w.wheel_shift = num(v, w.wheel_shift * 100.0).max(0.0) / 100.0,
+            ["@strong_tyres", v, ..] => w.strong_tyres = on(v),
+            ["@wreck_engine", v, ..] => w.engine_wreck = num(v, w.engine_wreck),
+            ["@strong_axles", v, ..] => w.strong_axles = on(v),
             ["@prop_keep", v, ..] => w.prop_keep = num(v, w.prop_keep),
+            ["@wreck_desat", v, ..] => w.desat = num(v, w.desat).clamp(0.0, 1.0),
             ["@wreck_clear", v, ..] => w.clear_radius = num(v, w.clear_radius).max(0.0),
             ["@wreck_crush", v, ..] => w.crush = num(v, w.crush),
             ["@wreck_crush_rounds", v, ..] => w.crush_rounds = num(v, w.crush_rounds as f32) as i32,
             ["@air_gravity", v, ..] => s.air_gravity = num(v, s.air_gravity),
             ["@debug_log", v, ..] => s.debug_log = on(v),
             ["@perf", v, ..] => s.perf = on(v),
+            ["@air_control", v, ..] => s.air.control = num(v, s.air.control).clamp(0.0, 1.0),
+            ["@barrel_roll", v, ..] => s.air.barrel_roll = on(v),
+            ["@barrel_roll_trigger", v, ..] => s.air.barrel_trigger = num(v, s.air.barrel_trigger).clamp(10.0, 720.0),
+            ["@drift_assist", v, ..] => s.drift.assist = num(v, s.drift.assist).clamp(0.0, 3.0),
+            ["@brake_drift", v, ..] => s.drift.brake_drift = on(v),
+            ["@brake_drift_time", v, ..] => s.drift.brake_drift_time = num(v, s.drift.brake_drift_time).clamp(0.05, 3.0),
+            ["@brake_drift_speed", v, ..] => s.drift.brake_drift_speed = num(v, s.drift.brake_drift_speed).max(0.0),
+            ["@drift_angle", v, ..] => s.drift.max_angle = num(v, s.drift.max_angle).clamp(15.0, 85.0),
+            ["@car_top_speed", v, ..] => s.car_top = num(v, s.car_top).clamp(0.5, 5.0),
+            ["@car_power", v, ..] => s.car_power = num(v, s.car_power).clamp(0.5, 5.0),
+            ["@traffic", v, ..] => s.traffic = num(v, s.traffic).clamp(0.0, 3.0),
             ["@downforce", v, ..] => s.downforce = num(v, s.downforce).max(0.0),
             ["@police_power", v, ..] => s.police.power = num(v, s.police.power),
             ["@police_top", v, ..] => s.police.top = num(v, s.police.top),
+            ["@police_tough", v, ..] => s.police.tough = on(v),
             ["@mode", m, ..] => s.paradise = !m.eq_ignore_ascii_case("off"),
             ["@start", x, y, z, ..] => {
                 if let (Ok(x), Ok(y), Ok(z)) = (x.parse(), y.parse(), z.parse()) {
@@ -179,6 +207,7 @@ fn load_settings() -> Settings {
             _ => {}
         }
     }
+    s.boost.power = s.car_power / physics::BAKED_POWER;
     s
 }
 
@@ -208,9 +237,15 @@ struct Rescue {
     died_at: Option<Vec3>,
     /// The screen is being held black over GTA's respawn.
     holding: bool,
+    /// The in-game date and time when it happened: GTA moves the clock on
+    /// (hours, in hospital or in custody) and it's put back afterwards.
+    clock: Option<[i32; 6]>,
     /// Game time the player was first seen with no ground below.
     void_since: Option<i32>,
     last_probe: i32,
+    /// The last place with solid ground just below (on a road, on foot):
+    /// where a fall through the map is put back to, near enough.
+    last_safe: Option<Vec3>,
 }
 
 impl Rescue {
@@ -221,6 +256,7 @@ impl Rescue {
         if n::is_entity_dead(ped) || n::is_player_being_arrested(n::player_id()) {
             if !self.was_dead {
                 self.died_at = Some(pos);
+                self.clock = Some(n::clock());
             }
             // GTA's "wasted" / "busted" plays out in full; once it has faded
             // to black, keep it black through the respawn in Los Santos.
@@ -237,6 +273,11 @@ impl Rescue {
         if self.was_dead {
             // Respawned (hospital / police station): those are in Los Santos.
             self.was_dead = false;
+            if let Some(c) = self.clock.take() {
+                let moved = n::clock();
+                n::set_clock(c);
+                log(&format!("clock put back to {:02}:{:02} (GTA had moved it to {:02}:{:02})", c[0], c[1], moved[0], moved[1]));
+            }
             return Some(RescueKind::Respawned(self.died_at.take(), std::mem::take(&mut self.holding)));
         }
         // Swimming or boating on the open sea is fine.
@@ -250,9 +291,14 @@ impl Rescue {
         self.last_probe = now;
         let ground = n::raycast(Vec3::new(pos.x, pos.y, pos.z + 2.0), Vec3::new(pos.x, pos.y, pos.z - 1000.0), 1, ent);
         match (ground, self.void_since) {
-            (Some(_), _) => self.void_since = None,
+            (Some(g), _) => {
+                self.void_since = None;
+                if pos.z - g.pos.z < 3.0 {
+                    self.last_safe = Some(pos);
+                }
+            }
             (None, None) => self.void_since = Some(now),
-            (None, Some(t)) if now - t >= Self::VOID_MS => return Some(RescueKind::NoGround),
+            (None, Some(t)) if now - t >= Self::VOID_MS => return Some(RescueKind::NoGround(self.last_safe)),
             _ => {}
         }
         None
@@ -262,7 +308,8 @@ impl Rescue {
 enum RescueKind {
     /// Where it happened, and whether the screen is being held black.
     Respawned(Option<Vec3>, bool),
-    NoGround,
+    /// Fell through the map; the last place with ground below, if known.
+    NoGround(Option<Vec3>),
 }
 
 /// Ends the arrival scene the game plays on load (a player switch, or the
@@ -479,10 +526,19 @@ extern "C" fn script_main() {
     let mut boost_settings = settings.boost;
     let mut air_gravity = settings.air_gravity;
     let mut downforce = settings.downforce;
+    let mut car = (settings.car_top, settings.car_power);
+    let mut traffic = settings.traffic;
+    let mut drift_settings = settings.drift;
+    let mut drift = drift::Drift::default();
+    let mut air_settings = settings.air;
+    let mut air = air::Air::default();
+    let mut tuning = physics::CarTuning::default();
     let mut police = settings.police;
     let mut debug_log = settings.debug_log;
     let mut perf_on = settings.perf;
     let mut perf = perf::Perf::new(n::get_game_timer());
+    // The ped protected as a driver (see below), and whether it is now.
+    let mut protected = (0, false);
     let mut boost = boost::Boost::default();
     let mut chase = chase::Chase::new();
     let mut shield = propshield::PropShield::load();
@@ -543,12 +599,12 @@ extern "C" fn script_main() {
                     }
                 }
                 let near = match why {
-                    RescueKind::Respawned(Some(at), _) => respawn_near(at),
+                    RescueKind::Respawned(Some(at), _) | RescueKind::NoGround(Some(at)) => respawn_near(at),
                     _ => None,
                 };
                 let what = match why {
                     RescueKind::Respawned(..) => "respawned",
-                    RescueKind::NoGround => "no ground below",
+                    RescueKind::NoGround(_) => "no ground below",
                 };
                 log(&format!("RESCUE ({what}) at ({:.1}, {:.1}, {:.1})", pos.x, pos.y, pos.z));
                 teleport(&mut state, near.as_ref().unwrap_or(d));
@@ -567,13 +623,30 @@ extern "C" fn script_main() {
             boost_settings = s.boost;
             air_gravity = s.air_gravity;
             downforce = s.downforce;
+            car = (s.car_top, s.car_power);
+            traffic = s.traffic;
+            drift_settings = s.drift;
+            air_settings = s.air;
             police = s.police;
             debug_log = s.debug_log;
             perf_on = s.perf;
         }
+        if traffic != 1.0 {
+            n::set_vehicle_density_multiplier_this_frame(traffic);
+            n::set_random_vehicle_density_multiplier_this_frame(traffic);
+        }
         if state.held.is_none() {
             let driving = if n::is_ped_in_any_vehicle(ped) { n::get_vehicle_ped_is_in(ped) } else { 0 };
             let driven = if driving != 0 && n::get_ped_in_vehicle_seat(driving, -1) == ped { driving } else { 0 };
+            // A driver can't be killed by a crash or thrown out of the car:
+            // a crash bad enough is a wreck, which respawns them, and dying
+            // in it as well ran GTA's "wasted" on top of the wreck.
+            if protected != (ped, driven != 0) {
+                protected = (ped, driven != 0);
+                n::set_collision_proof(ped, driven != 0);
+                n::set_ped_config_flag(ped, 32, driven == 0); // flies through the windscreen
+                n::set_ped_can_be_knocked_off_vehicle(ped, if driven != 0 { 1 } else { 0 });
+            }
             perf.start();
             shield.sweep(driven, now);
             perf.done(1);
@@ -604,10 +677,14 @@ extern "C" fn script_main() {
                 wreck::Event::None => {}
             }
             perf.start();
-            boost.update(&boost_settings, ped, now);
-            perf.done(4);
+            // Car power first: boosting overrides it on the player's car.
+            tuning.update(car.0, car.1, pos);
+            drift.update(driven, &drift_settings);
+            air.update(driven, &air_settings, air_gravity);
             physics::vehicle_forces(air_gravity, downforce, pos);
             perf.done(5);
+            boost.update(&boost_settings, ped, now);
+            perf.done(4);
             chase.update(&police, ped, pos, now);
             perf.done(6);
         }

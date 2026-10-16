@@ -40,6 +40,10 @@ the part to keep.
    what it leads to). Shift+click adds to the selection.
 3. Tools for the selection: **Reverse**, **Delete** / **Restore**,
    **◀ Shift / Shift ▶** (0.25 m sideways), **Set speed** (km/h).
+   **Set traffic** (0–9, Burnout's scale: how much traffic starts on the
+   lane; 0 = none). **Colour by traffic** shows every lane's level (grey
+   none, blue quiet … red busy); **Select area** then two clicks on the
+   ground selects every lane in that box.
 4. **Connect A→B**: click lane A, Shift+click lane B, Connect — a short link
    from A's end to B's start.
 5. **Draw lane**: click points in the driving direction, then **Finish lane**
