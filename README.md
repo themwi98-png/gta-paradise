@@ -2,8 +2,8 @@
 
 [Download](../../releases) (detailed installation instructions below)
 
-## Video:
-[![Watch the video](https://img.youtube.com/vi/2o_EHrRY4cg/maxresdefault.jpg)](https://www.youtube.com/watch?v=2o_EHrRY4cg)
+## Video of new drifting and more:
+[![Watch the video](https://img.youtube.com/vi/uDZeJiHGrR0/maxresdefault.jpg)](https://www.youtube.com/watch?v=uDZeJiHGrR0)
 
 Burnout Paradise City in GTA V story mode: the whole of Paradise City, from
 **Burnout Paradise Remastered**, replaces Los Santos in **GTA V Legacy**. GTA's
@@ -123,6 +123,9 @@ The ones you're most likely to want:
 
 Every setting is described in the file itself and in
 [docs/FEATURES.md](docs/FEATURES.md#settings-paradiseini-in-the-gta-folder).
+
+## Original Video
+[![Watch the video](https://img.youtube.com/vi/2o_EHrRY4cg/maxresdefault.jpg)](https://www.youtube.com/watch?v=2o_EHrRY4cg)
 
 ## Project layout
 
