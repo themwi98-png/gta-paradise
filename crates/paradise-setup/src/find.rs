@@ -15,7 +15,7 @@ fn steam_libraries() -> Vec<PathBuf> {
         out.push(PathBuf::from(steam));
         for line in text.lines() {
             let parts: Vec<&str> = line.split('"').collect();
-            // 	"path"		"H:\\SteamLibrary"
+            // 	"path"		"D:\\SteamLibrary"
             if parts.len() >= 4 && parts[1] == "path" {
                 out.push(PathBuf::from(parts[3].replace(r"\\", r"\")));
             }
