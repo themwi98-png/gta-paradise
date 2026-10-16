@@ -1,3 +1,65 @@
+# GTA Paradise v0.2.1
+
+A patch: flying through the windscreen in wrecks, a better brake-to-drift,
+stronger brakes, and 1,439 more water fixes.
+
+---
+
+## Wrecks
+
+- **Fly through the windscreen.** GTA's own windscreen ejection is back, but
+  only in a wreck: in a big head-on crash you can be thrown out of the car,
+  and the slow-motion camera follows both the car and you as you fly apart.
+  You're unhurt and respawn in the new car as usual. Normal crashes and prop
+  hits at speed never throw you out. `@wreck_eject` (on; off = stay in).
+
+## Driving
+
+- **Brake to drift only when turning.** Tapping the brake starts a drift only
+  if you're steering (or already swinging round a corner) when you press it.
+  Braking going straight or mostly straight is always just the brake.
+  `@brake_drift_steer` (0.3): how far you must be steering, 0 to 1 (0 = the
+  old always-on behaviour).
+- **Stronger brakes:** 2.5× GTA's (was 1.75×, `@car_brakes` *(setup)*). Police
+  and traffic use the same car data, so they brake just as hard.
+- **Start in a Drift Tampa.** When Paradise City loads you're put in a fresh
+  Drift Tampa on the road by the start point. `@start_car` (drifttampa): any
+  GTA vehicle model name, or `none` to start on foot. Wrecks respawn you in a
+  copy of whatever you're driving.
+
+## Police
+
+- **Pursuing police no longer get double engine power** (`@police_power`
+  2 → 1). They keep their extra top speed (`@police_top` 100).
+
+## Map
+
+- **1,439 more flooded water squares removed** (2,095 in all).
+- **Sidewalks fixed in 35 places:** 27 wrong sidewalk areas removed and 8
+  new ones added, so pedestrians walk where they should.
+- **More traffic fixes:** more lanes removed or redrawn, roads with faster
+  traffic, and 11 more parked cars.
+
+## Map editor (viewer)
+
+- **Parked vehicles of any kind.** Set a parked spot to any GTA vehicle model
+  (planes, helicopters, boats, ATVs...) with **Set vehicle**, or type a model
+  before **Add parked car**. Shown orange.
+- **Copy and paste parked vehicles** (Ctrl+C / Ctrl+V or the buttons): each
+  paste lands 3 m to the side of the last, so repeated pastes make a row.
+- **Parked cars are easier to click:** anywhere on their outline box counts.
+- **Lane speeds show GTA's speed band** (slow under 40 km/h, normal 40–65,
+  fast 65–97, fastest above). GTA traffic only drives differently when a
+  lane changes band.
+
+## Upgrading from v0.2.0
+
+Run the new setup over your install. Settings you changed keep your values;
+`@police_power` and `@car_brakes` move to the new defaults if you never
+changed them, and the new settings are added.
+
+---
+
 # GTA Paradise v0.2.0
 
 Major improvements to driving: drifting has been implemented in a way much more akin to Burnout, airborne vehicles now stay stable, fall faster, and barrel rolls are implemented like Burnout. Traffic now thins out in the countryside, off-road is as

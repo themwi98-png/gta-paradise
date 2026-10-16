@@ -40,7 +40,12 @@
 //! CLEAR_RADIUS of the wreck are removed, so the respawn starts clean.
 //!
 //! The player is kept invincible through a wreck, so GTA's own death and
-//! hospital respawn never happen for one; the wreck is the death.
+//! hospital respawn never happen for one; the wreck is the death. With
+//! `@wreck_eject` GTA's own windscreen ejection is switched on, but only
+//! during the slow-motion run-up to a wreck that is all but certain (see
+//! above), so normal driving and prop hits never throw the driver out. A
+//! crash that does is always a wreck, and the crash camera frames both car
+//! and driver, pulling back as they fly apart.
 
 use crate::natives as n;
 use crate::shv::{self, Vec3};
@@ -56,6 +61,8 @@ pub struct WreckSettings {
     pub impact_dv: f32,
     /// Blow the car up on a wreck.
     pub explode: bool,
+    /// Throw the driver through the windscreen in a wreck.
+    pub eject: bool,
     /// Speed (m/s) the new car starts at.
     pub respawn_speed: f32,
     /// Slow-motion crash time (real seconds) before the fade.
@@ -104,7 +111,7 @@ pub struct WreckSettings {
 
 impl Default for WreckSettings {
     fn default() -> Self {
-        Self { enabled: true, wreck_dv: 25.0, impact_dv: 11.0, explode: true, respawn_speed: 12.0, crash_time: 5.0, slowmo: 0.15, crash_cam: true, crush: 8000.0, crush_rounds: 8, damage_wreck: true, stuck_time: 2.5, prop_keep: 1.0, precrash: true, precrash_lead: 0.12, crash_cam_dv: 20.0, crash_cam_hold: 1.5, clear_radius: 6.0, desat: 0.6, wheel_shift: 0.0, strong_tyres: true, engine_wreck: 100.0, strong_axles: true }
+        Self { enabled: true, wreck_dv: 25.0, impact_dv: 11.0, explode: true, eject: true, respawn_speed: 12.0, crash_time: 5.0, slowmo: 0.15, crash_cam: true, crush: 8000.0, crush_rounds: 8, damage_wreck: true, stuck_time: 2.5, prop_keep: 1.0, precrash: true, precrash_lead: 0.12, crash_cam_dv: 20.0, crash_cam_hold: 1.5, clear_radius: 6.0, desat: 0.6, wheel_shift: 0.0, strong_tyres: true, engine_wreck: 100.0, strong_axles: true }
     }
 }
 
@@ -467,6 +474,12 @@ impl Wreck {
             return Event::None;
         }
         if !n::is_ped_in_any_vehicle(ped) {
+            // Thrown out through the windscreen (GTA's own, `@wreck_eject`):
+            // always a wreck.
+            if let Some(event) = self.thrown_out(s, ped) {
+                self.reset();
+                return event;
+            }
             self.reset();
             return Event::None;
         }
@@ -476,8 +489,10 @@ impl Wreck {
             self.reset();
             return Event::None;
         }
-        // Burnout drivers stay in the car.
-        n::set_ped_config_flag(ped, 32, false);
+        // Burnout drivers stay in the car, except that GTA's windscreen
+        // ejection (`@wreck_eject`) is on in the run-up to a certain wreck.
+        let certain_wreck = self.pre.as_ref().is_some_and(|p| !p.impact);
+        n::set_ped_config_flag(ped, 32, s.eject && certain_wreck);
         if veh != self.vehicle {
             self.reset();
             self.vehicle = veh;
@@ -583,6 +598,31 @@ impl Wreck {
         Event::Impact(dv)
     }
 
+    /// The driver was just thrown out of the car by a crash (out of it,
+    /// ragdolling, the car fast a moment ago and its speed changed sharply):
+    /// runs the wreck.
+    fn thrown_out(&mut self, s: &WreckSettings, ped: i32) -> Option<Event> {
+        let veh = self.vehicle;
+        if !s.eject || veh == 0 || !n::does_entity_exist(veh) || !n::is_ped_ragdoll(ped) {
+            return None;
+        }
+        let &(_, v0) = self.history.front()?;
+        let v = n::get_entity_velocity(veh);
+        let (dx, dy) = (v.x - v0.x, v.y - v0.y);
+        let dv = len_h(dx, dy);
+        if len_h(v0.x, v0.y) < EJECT_MIN_SPEED || dv < s.impact_dv {
+            return None;
+        }
+        // The struck side, in car space, as for any impact.
+        let f = n::get_entity_forward_vector(veh);
+        let (hx, hy) = (-dx / dv, -dy / dv);
+        let local = (hx * f.y - hy * f.x, hx * f.x + hy * f.y);
+        crate::log(&format!("wreck: driver thrown through the windscreen at {:.0} km/h", len_h(v0.x, v0.y) * 3.6));
+        let pre = self.pre.take();
+        self.run_wreck(s, ped, veh, local, heading_of(v0.x, v0.y), len_h(v0.x, v0.y), pre);
+        Some(Event::Wrecked { dv })
+    }
+
     fn run_wreck(&mut self, s: &WreckSettings, ped: i32, veh: i32, local: (f32, f32), travel: f32, speed: f32, pre: Option<PreCrash>) {
         let player = n::player_id();
         let model = n::get_entity_model(veh);
@@ -637,6 +677,11 @@ impl Wreck {
         let mut exploded = !s.explode;
         let mut crushes = 1;
         while start.elapsed().as_secs_f32() < s.crash_time {
+            // Thrown out through the windscreen (at the impact, or in the
+            // first moments of the crash): frame the driver too.
+            if s.eject && cam.follow == 0 && !n::is_ped_in_any_vehicle(ped) {
+                cam.follow = ped;
+            }
             // Keep crumpling it as it tumbles (the game limits how far one
             // hit can push the body in, so it is done in rounds).
             if crushes < s.crush_rounds && start.elapsed().as_secs_f32() > crushes as f32 * 0.12 {
@@ -682,6 +727,14 @@ impl Wreck {
             None => (crash_pos, travel),
         };
         n::clear_ped_tasks_immediately(ped);
+        // Up from a ragdoll before going into the new car.
+        for _ in 0..10 {
+            if !n::is_ped_ragdoll(ped) {
+                break;
+            }
+            shv::wait(0);
+            n::clear_ped_tasks_immediately(ped);
+        }
         n::delete_vehicle(veh);
         n::set_entity_coords(ped, Vec3::new(spot.x, spot.y, spot.z + 1.0));
         let t0 = n::get_game_timer();
@@ -915,6 +968,8 @@ struct CrashCam {
     cam: i32,
     /// Starting angle around the car (radians, world space).
     angle: f32,
+    /// The driver, thrown out: framed together with the car (0: car only).
+    follow: i32,
 }
 
 impl CrashCam {
@@ -925,7 +980,7 @@ impl CrashCam {
 
     fn new(enabled: bool, veh: i32, travel: f32) -> Self {
         if !enabled {
-            return Self { cam: 0, angle: 0.0 };
+            return Self { cam: 0, angle: 0.0, follow: 0 };
         }
         let cam = n::create_cam();
         n::set_cam_fov(cam, 50.0);
@@ -935,7 +990,7 @@ impl CrashCam {
         let h = travel.to_radians();
         let (fx, fy) = (-h.sin(), h.cos());
         let angle = (fy * 0.6 - fx).atan2(fx * 0.6 + fy) ;
-        let mut c = Self { cam, angle };
+        let mut c = Self { cam, angle, follow: 0 };
         c.update(veh, 0.0);
         n::set_cam_active(cam, true);
         n::render_script_cams(true, 0);
@@ -946,9 +1001,20 @@ impl CrashCam {
         if self.cam == 0 {
             return;
         }
-        let p = n::get_entity_coords(veh);
+        let car = n::get_entity_coords(veh);
+        // The car, or the car and the thrown driver together: from between
+        // them, further back the further apart they are.
+        let (p, radius, height) = if self.follow != 0 && n::does_entity_exist(self.follow) {
+            let d = n::get_entity_coords(self.follow);
+            let apart = ((d.x - car.x).powi(2) + (d.y - car.y).powi(2) + (d.z - car.z).powi(2)).sqrt();
+            let mid = Vec3::new((car.x + d.x) * 0.5, (car.y + d.y) * 0.5, (car.z + d.z) * 0.5);
+            n::point_cam_at_coord(self.cam, mid);
+            (mid, Self::RADIUS.max(apart * 0.8 + 4.0), Self::HEIGHT + apart * 0.12)
+        } else {
+            (car, Self::RADIUS, Self::HEIGHT)
+        };
         let a = self.angle + t * Self::SPIN;
-        let want = Vec3::new(p.x + a.cos() * Self::RADIUS, p.y + a.sin() * Self::RADIUS, p.z + Self::HEIGHT);
+        let want = Vec3::new(p.x + a.cos() * radius, p.y + a.sin() * radius, p.z + height);
         // Don't put the camera inside a wall or the ground.
         let from = Vec3::new(p.x, p.y, p.z + 1.0);
         let at = match n::raycast(from, want, 1, veh) {
@@ -972,6 +1038,10 @@ impl CrashCam {
         }
     }
 }
+
+/// Being thrown out only counts as a wreck from this speed (m/s), with the
+/// car's speed changing suddenly (not just bailing out of a moving car).
+const EJECT_MIN_SPEED: f32 = 12.0;
 
 /// Crumples the whole car: hits from every side and from above, heaviest on
 /// the struck side. With `focusOnModel` each hit travels in from outside the

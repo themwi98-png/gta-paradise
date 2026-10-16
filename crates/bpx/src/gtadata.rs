@@ -33,7 +33,7 @@ enum Change {
 /// Grip multiplier when none is given (the player's `@car_grip`).
 pub const GRIP_DEFAULT: f64 = 1.2;
 /// Brake multiplier when none is given (the player's `@car_brakes`).
-pub const BRAKES_DEFAULT: f64 = 1.75;
+pub const BRAKES_DEFAULT: f64 = 2.5;
 
 /// How much harder crashes hit and how much faster cars go (Rockstar's
 /// values average about 0.8 for deformation, 1.0 for collision and 1.5 for

@@ -44,12 +44,15 @@ pub struct Neighbour {
 
 /// A parked car: world transform (Burnout's row-major affine matrix; rows 0-2
 /// are the car's axes, row 3 its position), flow type and spawn chance.
-#[derive(Debug, Clone, Copy)]
+/// `model` is a GTA vehicle model set by hand (none in Burnout's data: GTA
+/// picks a car).
+#[derive(Debug, Clone)]
 pub struct StaticVehicle {
     pub transform: [f32; 16],
     pub flow_type: u16,
     pub exists_chance: u8,
     pub flags: u8,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -136,7 +139,7 @@ pub fn parse_traffic(b: &[u8]) -> Traffic {
                 for (i, v) in transform.iter_mut().enumerate() {
                     *v = f32_at(b, o + i * 4);
                 }
-                StaticVehicle { transform, flow_type: u16_at(b, o + 0x40), exists_chance: b[o + 0x42], flags: b[o + 0x43] }
+                StaticVehicle { transform, flow_type: u16_at(b, o + 0x40), exists_chance: b[o + 0x42], flags: b[o + 0x43], model: None }
             })
             .collect();
         hulls.push(Hull { sections, parked });

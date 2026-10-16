@@ -10,6 +10,10 @@
 // starts on that road. "Colour by traffic" shows it; "Set traffic" changes
 // it for the selection, and "Select area" selects every lane in a box.
 //
+// Parked vehicles can be set to any GTA vehicle model ("Set vehicle", or
+// "Add parked car" with a model in the box): planes, helicopters, boats,
+// ATVs... Shown orange. Without one, GTA picks a car.
+//
 // Everything is in Burnout coordinates (y up), like the rest of the viewer.
 
 const STORAGE_KEY = 'paradise-traffic-edits-v1';
@@ -19,11 +23,23 @@ const PICK_PX = 12;         // click distance for selecting (pixels)
 const SHIFT_STEP = 0.25;    // sideways nudge (m)
 const DRAWN_TRAFFIC = 5;    // traffic level of a drawn lane (matches bpx)
 const MAX_TRAFFIC = 9;      // busiest Burnout lane (colour scale)
+const CAR_PICK_BONUS = 10;  // parked cars are easier to click: their whole box,
+                            // plus this many pixels around it
+const PASTE_SIDE = 3.0;     // pasted parked cars go this far (m) to the right
+
+// GTA roads only have four speed bands (bpx paths.rs speed_class): traffic
+// picks its own cruising speed from the band, so speeds within one band
+// drive the same.
+function speedBand(ms) {
+  return ms < 11 ? 'slow' : ms < 18 ? 'normal' : ms < 27 ? 'fast' : 'fastest';
+}
+const kmh = (ms) => `${Math.round(ms * 3.6)} km/h (GTA: ${speedBand(ms)})`;
 
 const COLOURS = {
   lane: 0xffd23f, reversed: 0xff8a00, shifted: 0xffe98f, deleted: 0x7a2525,
   selected: 0x00e5ff, drawn: 0x3fff7a, connection: 0xff40ff,
   parked: 0x9ecbff, parkedDeleted: 0xb03030, parkedNew: 0x3fff7a, draft: 0xffffff,
+  parkedModel: 0xff9f2e,      // a parked vehicle set to a specific model
 };
 
 const emptyEdits = () => ({ format: 'paradise-traffic-edits-v1', lanes: {}, connections: [], newLanes: [], parked: {}, newParked: [] });
@@ -47,6 +63,9 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
     <div class="row"><button id="tDraw">Draw lane</button><button id="tFinish">Finish lane</button></div>
     <div class="row"><button id="tAddPark">Add parked car</button><button id="tMovePark">Move car</button></div>
     <div class="row"><button id="tRotL">↺ 15°</button><button id="tRotR">↻ 15°</button></div>
+    <div class="row"><button id="tCopyPark">Copy cars</button><button id="tPastePark">Paste cars</button></div>
+    <div class="row"><input id="tModel" list="tModels" placeholder="vehicle (empty = any car)" style="width:150px"><button id="tSetModel">Set vehicle</button></div>
+    <datalist id="tModels"><option value="luxor">Planes</option><option value="shamal">Planes</option><option value="vestra">Planes</option><option value="nimbus">Planes</option><option value="mammatus">Planes</option><option value="cuban800">Planes</option><option value="duster">Planes</option><option value="dodo">Planes</option><option value="velum">Planes</option><option value="titan">Planes</option><option value="miljet">Planes</option><option value="besra">Planes</option><option value="maverick">Helicopters</option><option value="frogger">Helicopters</option><option value="swift">Helicopters</option><option value="supervolito">Helicopters</option><option value="volatus">Helicopters</option><option value="seasparrow">Helicopters</option><option value="havok">Helicopters</option><option value="buzzard2">Helicopters</option><option value="polmav">Helicopters</option><option value="dinghy">Boats</option><option value="jetmax">Boats</option><option value="marquis">Boats</option><option value="seashark">Boats</option><option value="speeder">Boats</option><option value="squalo">Boats</option><option value="suntrap">Boats</option><option value="toro">Boats</option><option value="tropic">Boats</option><option value="tug">Boats</option><option value="predator">Boats</option><option value="blazer">Off-road</option><option value="blazer2">Off-road</option><option value="sanchez">Off-road</option><option value="bf400">Off-road</option><option value="verus">Off-road</option><option value="outlaw">Off-road</option><option value="vagrant">Off-road</option><option value="bifta">Off-road</option><option value="dune">Off-road</option></datalist>
     <div class="row"><button id="tUndo">Undo</button><button id="tClearSel">Clear selection</button></div>
     <div class="row"><button id="tExport">Export edits</button><button id="tReset">Reset all</button></div>
     <div id="tStatus" style="color:var(--muted);font-size:11px;margin-top:5px;line-height:1.35"></div>`;
@@ -59,6 +78,7 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
   let undo = [];
   let mode = 'select';        // select | draw | addPark | movePark | area
   let areaStart = null;       // first corner of an area selection
+  let clipboard = [];         // copied parked cars: { pos, dir }
   let draft = [];             // points of the lane being drawn
   const selection = [];       // ordered keys: lane:<id>, new:<i>, conn:<i>, park:<id>, np:<i>
 
@@ -109,8 +129,10 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
   }
   function parkedPose(car) {
     const e = edits.parked[car.id] || {};
-    return { pos: e.pos || car.pos, dir: e.dir || car.dir, deleted: !!e.delete };
+    return { pos: e.pos || car.pos, dir: e.dir || car.dir, deleted: !!e.delete, model: e.model || null };
   }
+  // The vehicle model in the box (lower case; empty = GTA picks a car).
+  const modelInBox = () => $('tModel').value.trim().toLowerCase();
   const laneTraffic = (lane) => (edits.lanes[lane.id] || {}).traffic ?? lane.traffic ?? DRAWN_TRAFFIC;
   function trafficColour(v) {
     if (!v) return 0x6a6a6a;
@@ -148,13 +170,17 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
       run -= len;
     }
   }
-  function addCar(pos, col, pose, colour) {
+  // A parked car's outline (closed) and its nose marker.
+  function carShape(pose) {
     const [x, y, z] = pose.pos, [fx, fz] = pose.dir;
     const l = Math.hypot(fx, fz) || 1, ux = fx / l, uz = fz / l;
     const corner = (a, b) => [x + ux * a - uz * b, y, z + uz * a + ux * b];
-    const box = [corner(2.3, 1), corner(2.3, -1), corner(-2.3, -1), corner(-2.3, 1), corner(2.3, 1)];
+    return { box: [corner(2.3, 1), corner(2.3, -1), corner(-2.3, -1), corner(-2.3, 1), corner(2.3, 1)], nose: [[x, y, z], corner(3.2, 0)] };
+  }
+  function addCar(pos, col, pose, colour) {
+    const { box, nose } = carShape(pose);
     addPolyline(pos, col, box, colour, false);
-    addPolyline(pos, col, [[x, y, z], corner(3.2, 0)], colour, false);
+    addPolyline(pos, col, nose, colour, false);
   }
 
   function redraw() {
@@ -176,9 +202,9 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
     if (draft.length) addPolyline(pos, col, draft.length > 1 ? draft : [draft[0], draft[0]], COLOURS.draft, true);
     for (const car of data.parked) {
       const p = parkedPose(car);
-      addCar(pos, col, p, sel.has('park:' + car.id) ? COLOURS.selected : p.deleted ? COLOURS.parkedDeleted : COLOURS.parked);
+      addCar(pos, col, p, sel.has('park:' + car.id) ? COLOURS.selected : p.deleted ? COLOURS.parkedDeleted : p.model ? COLOURS.parkedModel : COLOURS.parked);
     }
-    edits.newParked.forEach((car, i) => addCar(pos, col, car, sel.has('np:' + i) ? COLOURS.selected : COLOURS.parkedNew));
+    edits.newParked.forEach((car, i) => addCar(pos, col, car, sel.has('np:' + i) ? COLOURS.selected : car.model ? COLOURS.parkedModel : COLOURS.parkedNew));
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
@@ -210,12 +236,27 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
     }
     return best;
   }
+  // Screen distance (px) from the mouse to a parked car: 0 anywhere on it,
+  // less CAR_PICK_BONUS around it.
+  function carDist(m, pose) {
+    const pts = carShape(pose).box.slice(0, 4).map(toScreen);
+    if (pts.some((p) => !p)) return Infinity;
+    let inside = false;
+    for (let i = 0, j = 3; i < 4; j = i++) {
+      const [xi, yi] = pts[i], [xj, yj] = pts[j];
+      if ((yi > m[1]) !== (yj > m[1]) && m[0] < (xj - xi) * (m[1] - yi) / (yj - yi) + xi) inside = !inside;
+    }
+    if (inside) return 0;
+    let d = Infinity;
+    for (let i = 0; i < 4; i++) d = Math.min(d, segDist(m, pts[i], pts[(i + 1) % 4]));
+    return Math.max(0, d - CAR_PICK_BONUS);
+  }
   function pick(e) {
     const m = [e.clientX, e.clientY];
     let best = [PICK_PX, null];
     const consider = (key, d) => { if (d < best[0]) best = [d, key]; };
-    for (const car of data.parked) { const s = toScreen(parkedPose(car).pos); if (s) consider('park:' + car.id, Math.hypot(m[0] - s[0], m[1] - s[1]) * 0.8); }
-    edits.newParked.forEach((car, i) => { const s = toScreen(car.pos); if (s) consider('np:' + i, Math.hypot(m[0] - s[0], m[1] - s[1]) * 0.8); });
+    for (const car of data.parked) consider('park:' + car.id, carDist(m, parkedPose(car)));
+    edits.newParked.forEach((car, i) => consider('np:' + i, carDist(m, car)));
     edits.newLanes.forEach((l, i) => consider('new:' + i, polyDist(m, l.points)));
     edits.connections.forEach((c, i) => { const pts = connectionPoints(c); if (pts) consider('conn:' + i, polyDist(m, pts)); });
     for (const lane of data.lanes) consider('lane:' + lane.id, polyDist(m, lanePoints(lane)));
@@ -231,11 +272,11 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
       for (let k = 0; k + 1 < pts.length; k++) len += Math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][2] - pts[k][2]);
       const speed = e.speed ?? lane.speed;
       const flags = ['delete', 'reverse'].filter((f) => e[f]).concat(e.shift ? [`shift ${e.shift > 0 ? '+' : ''}${e.shift} m`] : []);
-      return `lane ${id} · ${Math.round(speed * 3.6)} km/h · traffic ${laneTraffic(lane)}${e.traffic != null ? ` (Burnout ${lane.traffic})` : ''} · ${len.toFixed(0)} m · width ${lane.width} m · leads to ${lane.next.join(', ') || '—'}` + (flags.length ? ` · edited: ${flags.join(', ')}` : '');
+      return `lane ${id} · ${kmh(speed)}${e.speed != null ? ` (Burnout ${Math.round(lane.speed * 3.6)})` : ''} · traffic ${laneTraffic(lane)}${e.traffic != null ? ` (Burnout ${lane.traffic})` : ''} · ${len.toFixed(0)} m · width ${(+lane.width).toFixed(1)} m · leads to ${lane.next.join(', ') || '—'}` + (flags.length ? ` · edited: ${flags.join(', ')}` : '');
     }
-    if (kind === 'park') { const p = parkedPose(parkedById.get(id)); return `parked car ${id} at ${p.pos.map((v) => v.toFixed(1)).join(', ')}` + (p.deleted ? ' · deleted' : ''); }
-    if (kind === 'np') return `new parked car ${id}`;
-    if (kind === 'new') return `drawn lane ${id} · ${edits.newLanes[+id].points.length} points · traffic ${edits.newLanes[+id].traffic ?? DRAWN_TRAFFIC}`;
+    if (kind === 'park') { const p = parkedPose(parkedById.get(id)); return `parked ${p.model || 'car (any)'} ${id} at ${p.pos.map((v) => v.toFixed(1)).join(', ')}` + (p.deleted ? ' · deleted' : ''); }
+    if (kind === 'np') return `new parked ${edits.newParked[+id].model || 'car (any)'} ${id}`;
+    if (kind === 'new') { const l = edits.newLanes[+id]; return `drawn lane ${id} · ${kmh(l.speed ?? 13.4)} · ${l.points.length} points · traffic ${l.traffic ?? DRAWN_TRAFFIC}`; }
     if (kind === 'conn') { const c = edits.connections[+id]; return `connection ${c.from} → ${c.to}`; }
     return key;
   }
@@ -273,7 +314,8 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
       const pt = [+p.x.toFixed(2), +p.y.toFixed(2), +p.z.toFixed(2)];
       if (mode === 'draw') { draft.push(pt); redraw(); return true; }
       if (mode === 'addPark') {
-        change(() => edits.newParked.push({ pos: pt, dir: nearestLaneDir(pt) }));
+        const model = modelInBox();
+        change(() => edits.newParked.push(Object.assign({ pos: pt, dir: nearestLaneDir(pt) }, model ? { model } : {})));
         mode = 'select';
         return true;
       }
@@ -368,12 +410,17 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
     change(() => edits.connections.push({ from: lanes[0], to: lanes[1] }));
   };
   $('tSetSpeed').onclick = () => {
-    const kmh = +$('tSpeed').value;
-    if (!(kmh > 0)) { status('Enter a speed in km/h first.'); return; }
+    const want = +$('tSpeed').value;
+    if (!(want > 0)) { status('Enter a speed in km/h first.'); return; }
+    const n = selected('lane').length + selected('new').length;
+    if (!n) { status('Select lanes first (click, Shift+click, or Select area).'); return; }
+    const ms = Math.round(want / 3.6 * 10) / 10;
     change(() => {
-      for (const id of selected('lane')) laneEdit(id).speed = Math.round(kmh / 3.6 * 10) / 10;
-      for (const i of selected('new')) edits.newLanes[+i].speed = Math.round(kmh / 3.6 * 10) / 10;
+      for (const id of selected('lane')) laneEdit(id).speed = ms;
+      for (const i of selected('new')) edits.newLanes[+i].speed = ms;
     });
+    showInfo();
+    status(`${n} lane${n > 1 ? 's' : ''} set to ${kmh(ms)}. GTA roads only have four speed bands (slow under 40 km/h, normal 40–65, fast 65–97, fastest above), so only a change of band shows in game.`);
   };
   $('tHeat').onchange = redraw;
   $('tSetBusy').onclick = () => {
@@ -412,6 +459,50 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
     for (const id of selected('park')) edits.parked[id] = Object.assign(edits.parked[id] || {}, { dir: turn(parkedPose(parkedById.get(id)).dir) });
     for (const i of selected('np')) edits.newParked[+i].dir = turn(edits.newParked[+i].dir);
   });
+  // Copy / paste parked cars: pasted copies go PASTE_SIDE to the right of
+  // the originals (each paste from the last one, so pasting again makes a
+  // row) and are selected, ready to move or turn.
+  const copyCars = () => {
+    clipboard = selected('park').map((id) => parkedPose(parkedById.get(id))).filter((p) => !p.deleted)
+      .concat(selected('np').map((i) => edits.newParked[+i]))
+      .map((p) => Object.assign({ pos: p.pos.slice(), dir: p.dir.slice() }, p.model ? { model: p.model } : {}));
+    status(clipboard.length ? `Copied ${clipboard.length} parked car${clipboard.length > 1 ? 's' : ''}.` : 'Select parked cars to copy first.');
+  };
+  const pasteCars = () => {
+    if (!clipboard.length) { status('Copy some parked cars first.'); return; }
+    clipboard = clipboard.map(({ pos, dir, model }) => {
+      const [rx, rz] = rightOf(dir[0], dir[1]);
+      return Object.assign({ pos: [+(pos[0] + rx * PASTE_SIDE).toFixed(2), pos[1], +(pos[2] + rz * PASTE_SIDE).toFixed(2)], dir: dir.slice() }, model ? { model } : {});
+    });
+    change(() => {
+      selection.length = 0;
+      for (const car of clipboard) {
+        edits.newParked.push(Object.assign({ pos: car.pos.slice(), dir: car.dir.slice() }, car.model ? { model: car.model } : {}));
+        selection.push('np:' + (edits.newParked.length - 1));
+      }
+    });
+    showInfo();
+    status(`Pasted ${clipboard.length} parked car${clipboard.length > 1 ? 's' : ''}: move or turn ${clipboard.length > 1 ? 'them' : 'it'} as needed.`);
+  };
+  // Set (or, with the box empty, clear) the vehicle of the selected parked
+  // cars: any GTA vehicle model, planes, helicopters and boats included.
+  $('tSetModel').onclick = () => {
+    const model = modelInBox();
+    if (model && !/^[a-z0-9_]+$/.test(model)) { status('A vehicle model is a GTA model name like maverick or dinghy (letters, digits, _).'); return; }
+    const n = selected('park').length + selected('np').length;
+    if (!n) { status('Select parked cars first.'); return; }
+    change(() => {
+      for (const id of selected('park')) {
+        const e = edits.parked[id] = Object.assign(edits.parked[id] || {}, { model });
+        if (!model) { delete e.model; if (!Object.keys(e).length) delete edits.parked[id]; }
+      }
+      for (const i of selected('np')) { if (model) edits.newParked[+i].model = model; else delete edits.newParked[+i].model; }
+    });
+    showInfo();
+    status(model ? `${n} parked vehicle${n > 1 ? 's' : ''} set to ${model} (orange). If GTA has no such model, nothing spawns there.` : `${n} parked vehicle${n > 1 ? 's' : ''} back to any car.`);
+  };
+  $('tCopyPark').onclick = copyCars;
+  $('tPastePark').onclick = pasteCars;
   $('tRotL').onclick = () => rotate(15);
   $('tRotR').onclick = () => rotate(-15);
   $('tUndo').onclick = () => {
@@ -441,6 +532,8 @@ export function initTraffic({ THREE, scene, camera, renderer, panel, info, pickG
     if (e.key === 'Backspace' && mode === 'draw') { draft.pop(); redraw(); }
     if ((e.key === 'Delete') && selection.length) $('tDelete').onclick();
     if (e.key === 'r' || e.key === 'R') $('tReverse').onclick();
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) { e.preventDefault(); copyCars(); }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) { e.preventDefault(); pasteCars(); }
   });
 
   status('Tick “Show traffic” to load the lanes.');

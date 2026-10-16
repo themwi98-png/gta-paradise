@@ -195,14 +195,18 @@ pub fn dump(game: &Path, out: &Path, placement: Placement) -> Result<()> {
 /// outside them.
 const CARGEN_TILE: f32 = 1024.0;
 const CARGEN_STREAM: f32 = 300.0;
-/// CCarGen flags as used by Rockstar's ambient street parking.
+/// CCarGen flags as used by Rockstar's ambient street parking...
 const CARGEN_FLAGS: u32 = 1568;
+/// ...plus, for a vehicle set by hand, spawn it whatever the traffic
+/// density (force spawn, ignore density).
+const CARGEN_SET_MODEL_FLAGS: u32 = CARGEN_FLAGS | 1 | 2;
 
 /// `bpx gta-cargens`: Burnout's parked cars as GTA car generators (random
-/// models picked by GTA), one ymap per CARGEN_TILE tile, as CodeWalker XML.
+/// models picked by GTA, or the vehicle set in the traffic editor), one ymap
+/// per CARGEN_TILE tile, as CodeWalker XML.
 pub fn export_cargens(game: &Path, out_dir: &Path, placement: Placement, prefix: &str) -> Result<()> {
     let t = load_traffic_edited(game)?;
-    let mut tiles: BTreeMap<(i32, i32), Vec<([f32; 3], [f32; 3])>> = BTreeMap::new();
+    let mut tiles: BTreeMap<(i32, i32), Vec<([f32; 3], [f32; 3], Option<String>)>> = BTreeMap::new();
     for v in t.hulls.iter().flat_map(|h| &h.parked) {
         let m = &v.transform;
         let p = placement.apply([m[12], m[13], m[14]]);
@@ -210,7 +214,7 @@ pub fn export_cargens(game: &Path, out_dir: &Path, placement: Placement, prefix:
         let f = placement.apply_dir([m[8], m[9], m[10]]);
         let len = (f[0] * f[0] + f[1] * f[1]).sqrt().max(1e-6);
         let tile = ((p[0] / CARGEN_TILE).floor() as i32, (p[1] / CARGEN_TILE).floor() as i32);
-        tiles.entry(tile).or_default().push((p, [f[0] / len, f[1] / len, 0.0]));
+        tiles.entry(tile).or_default().push((p, [f[0] / len, f[1] / len, 0.0], v.model.clone()));
     }
     std::fs::create_dir_all(out_dir)?;
     // Drop tiles from an earlier run (cars may have been deleted since).
@@ -225,15 +229,20 @@ pub fn export_cargens(game: &Path, out_dir: &Path, placement: Placement, prefix:
         let mut lo = [f32::MAX; 3];
         let mut hi = [f32::MIN; 3];
         let mut items = String::new();
-        for &(p, f) in cars {
+        for (p, f, model) in cars {
+            let (p, f) = (*p, *f);
             for k in 0..3 {
                 lo[k] = lo[k].min(p[k]);
                 hi[k] = hi[k].max(p[k]);
             }
             // orientX/Y: the parking slot's length along the car (5 m).
+            let (car_model, flags) = match model {
+                Some(m) => (format!("<carModel>{m}</carModel>"), CARGEN_SET_MODEL_FLAGS),
+                None => ("<carModel />".to_string(), CARGEN_FLAGS),
+            };
             let _ = write!(
                 items,
-                "  <Item>\n   {}\n   <orientX value=\"{}\" />\n   <orientY value=\"{}\" />\n   <perpendicularLength value=\"3\" />\n   <carModel />\n   <flags value=\"{CARGEN_FLAGS}\" />\n   <bodyColorRemap1 value=\"-1\" />\n   <bodyColorRemap2 value=\"-1\" />\n   <bodyColorRemap3 value=\"-1\" />\n   <bodyColorRemap4 value=\"-1\" />\n   <popGroup />\n   <livery value=\"-1\" />\n  </Item>\n",
+                "  <Item>\n   {}\n   <orientX value=\"{}\" />\n   <orientY value=\"{}\" />\n   <perpendicularLength value=\"3\" />\n   {car_model}\n   <flags value=\"{flags}\" />\n   <bodyColorRemap1 value=\"-1\" />\n   <bodyColorRemap2 value=\"-1\" />\n   <bodyColorRemap3 value=\"-1\" />\n   <bodyColorRemap4 value=\"-1\" />\n   <popGroup />\n   <livery value=\"-1\" />\n  </Item>\n",
                 crate::gtavis::v3("position", [p[0], p[1], p[2] + 0.5]),
                 f[0] * 5.0,
                 f[1] * 5.0
@@ -253,7 +262,8 @@ pub fn export_cargens(game: &Path, out_dir: &Path, placement: Placement, prefix:
         std::fs::write(out_dir.join(format!("{name}.ymap.xml")), head + &tail)?;
     }
     let total: usize = tiles.values().map(|c| c.len()).sum();
-    println!("cargens: {total} parked cars in {} ymaps -> {}", tiles.len(), out_dir.display());
+    let set: usize = tiles.values().flatten().filter(|c| c.2.is_some()).count();
+    println!("cargens: {total} parked vehicles ({set} set by hand) in {} ymaps -> {}", tiles.len(), out_dir.display());
     Ok(())
 }
 

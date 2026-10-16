@@ -115,13 +115,15 @@ fn drape(pts: &[[f32; 3]], floors: &crate::props::Floors) -> Vec<[f32; 3]> {
 /// { "lanes": { "217:36": { "reverse": true, "delete": false, "shift": 0.5, "speed": 13.4, "traffic": 6 } },
 ///   "connections": [ { "from": "217:36", "to": "217:40" } ],
 ///   "newLanes": [ { "points": [[x, y, z], ...], "width": 4.5, "speed": 13.4, "traffic": 5 } ],
-///   "parked": { "12:3": { "delete": true }, "12:4": { "pos": [x, y, z], "dir": [dx, dz] } },
-///   "newParked": [ { "pos": [x, y, z], "dir": [dx, dz] } ] }
+///   "parked": { "12:3": { "delete": true }, "12:4": { "pos": [x, y, z], "dir": [dx, dz], "model": "dinghy" } },
+///   "newParked": [ { "pos": [x, y, z], "dir": [dx, dz], "model": "maverick" } ] }
 /// ```
 ///
 /// `shift` moves a lane sideways (metres, + = to the right of its driving
 /// direction). A connection is a short lane from one lane's end to another's
 /// start. Drawn lanes snap to lane ends / starts within SNAP metres.
+/// A parked vehicle's `model` (any GTA vehicle: planes, helicopters, boats,
+/// ATVs...) makes it always that vehicle; without one GTA picks a car.
 /// `traffic` is how busy a lane is, in Burnout's own unit (vehicles per
 /// minute, 0 = none start there; Burnout uses 0-9); a connection takes the
 /// busier of its two lanes, a drawn lane DRAWN_TRAFFIC unless set.
@@ -149,6 +151,13 @@ fn parse_id(s: &str) -> Option<(usize, usize)> {
 fn vec3(v: &serde_json::Value) -> Option<[f32; 3]> {
     let a = v.as_array()?;
     Some([a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32, a.get(2)?.as_f64()? as f32])
+}
+
+/// A parked vehicle's set model, if any (a GTA model name: letters, digits,
+/// underscores).
+fn model(e: &serde_json::Value) -> Option<String> {
+    let m = e["model"].as_str()?.trim().to_ascii_lowercase();
+    (!m.is_empty() && m.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then_some(m)
 }
 
 fn dir2(v: &serde_json::Value) -> Option<[f32; 2]> {
@@ -316,7 +325,7 @@ impl TrafficEdits {
         }
 
         // Parked cars.
-        let (mut parked_deleted, mut parked_moved, mut parked_added) = (0, 0, 0);
+        let (mut parked_deleted, mut parked_moved, mut parked_added, mut parked_models) = (0, 0, 0, 0);
         let mut gone: HashSet<(usize, usize)> = HashSet::new();
         if let Some(parked) = self.doc["parked"].as_object() {
             for (id, e) in parked {
@@ -331,6 +340,10 @@ impl TrafficEdits {
                 if pos.is_some() || dir.is_some() {
                     set_transform(&mut v.transform, pos, dir);
                     parked_moved += 1;
+                }
+                if let Some(m) = model(e) {
+                    v.model = Some(m);
+                    parked_models += 1;
                 }
             }
         }
@@ -348,12 +361,14 @@ impl TrafficEdits {
                 let mut transform = [0.0f32; 16];
                 transform[15] = 1.0;
                 set_transform(&mut transform, Some(pos), Some(dir2(&e["dir"]).unwrap_or([1.0, 0.0])));
-                h0.parked.push(StaticVehicle { transform, flow_type: 0, exists_chance: 100, flags: 1 });
+                let model = model(e);
+                parked_models += model.is_some() as usize;
+                h0.parked.push(StaticVehicle { transform, flow_type: 0, exists_chance: 100, flags: 1, model });
                 parked_added += 1;
             }
         }
         eprintln!(
-            "traffic edits ({}): {reversed} reversed, {deleted} deleted, {shifted} shifted, {speeds} speeds, {busy} traffic levels, {connections} connections, {drawn} drawn lanes; parked {parked_deleted} deleted, {parked_moved} moved, {parked_added} added",
+            "traffic edits ({}): {reversed} reversed, {deleted} deleted, {shifted} shifted, {speeds} speeds, {busy} traffic levels, {connections} connections, {drawn} drawn lanes; parked {parked_deleted} deleted, {parked_moved} moved, {parked_added} added, {parked_models} with a set vehicle",
             self.path.display()
         );
     }

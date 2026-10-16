@@ -398,7 +398,7 @@ pub fn touching_vehicle(veh: i32) -> bool {
 }
 
 /// Rockstar's case-insensitive one-at-a-time hash (model names).
-fn joaat(s: &str) -> u32 {
+pub(crate) fn joaat(s: &str) -> u32 {
     let mut h: u32 = 0;
     for c in s.to_ascii_lowercase().bytes() {
         h = h.wrapping_add(c as u32);

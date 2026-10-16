@@ -13,9 +13,11 @@
 //!
 //! Brake to drift (`@brake_drift`): in Burnout a tap of the brake at speed
 //! starts a drift; GTA needs the handbrake. Pressing the brake at drifting
-//! speed (at least `@brake_drift_speed`, moving forward, wheels down) works
-//! as the handbrake for the first `@brake_drift_time` seconds; held longer,
-//! it's the normal brake again. With the handbrake already held, the brake is
+//! speed (at least `@brake_drift_speed`, moving forward, wheels down) while
+//! turning (steering at least `@brake_drift_steer`, or the car already
+//! swinging round) works as the handbrake for the first `@brake_drift_time`
+//! seconds; held longer, it's the normal brake again. Braking going straight
+//! is always just the brake. With the handbrake already held, the brake is
 //! always just the brake; pressing the handbrake button during the drift
 //! switches to the normal brake (the button then does nothing until the
 //! brake is let go).
@@ -34,17 +36,24 @@ pub struct DriftSettings {
     pub brake_drift_time: f32,
     /// From this speed (m/s).
     pub brake_drift_speed: f32,
+    /// Only while steering at least this much (0..1; 0 = going straight too).
+    pub brake_drift_steer: f32,
 }
 
 impl Default for DriftSettings {
     fn default() -> Self {
-        Self { assist: 1.1, max_angle: 45.0, brake_drift: true, brake_drift_time: 0.5, brake_drift_speed: 2.2 }
+        Self { assist: 1.1, max_angle: 45.0, brake_drift: true, brake_drift_time: 0.5, brake_drift_speed: 2.2, brake_drift_steer: 0.3 }
     }
 }
 
 /// INPUT_VEH_BRAKE and INPUT_VEH_HANDBRAKE.
 const CONTROL_BRAKE: i32 = 72;
 const CONTROL_HANDBRAKE: i32 = 76;
+/// INPUT_VEH_MOVE_LR (steering).
+const CONTROL_STEER: i32 = 59;
+/// The car counts as turning when it swings round this fast (rad/s, about
+/// 20 degrees a second), even with the steering already eased off.
+const TURNING_RATE: f32 = 0.35;
 
 /// Brake-to-drift state, kept between frames.
 #[derive(Default)]
@@ -93,11 +102,14 @@ impl Drift {
         let own_handbrake = n::get_control_normal(CONTROL_HANDBRAKE) > 0.25;
         if !self.held {
             // A new press: the handbrake if going fast enough, forward, on
-            // the ground, and the player isn't already on the handbrake;
-            // otherwise just the brake.
+            // the ground, turning, and the player isn't already on the
+            // handbrake; otherwise just the brake.
             self.held = true;
             let v = n::get_entity_speed_vector_relative(veh);
-            let ok = !own_handbrake && v.y >= s.brake_drift_speed && !n::is_entity_in_air(veh) && n::is_vehicle_on_all_wheels(veh);
+            let turning = s.brake_drift_steer <= 0.0
+                || n::get_control_normal(CONTROL_STEER).abs() >= s.brake_drift_steer
+                || n::get_entity_rotation_velocity(veh).z.abs() >= TURNING_RATE;
+            let ok = !own_handbrake && turning && v.y >= s.brake_drift_speed && !n::is_entity_in_air(veh) && n::is_vehicle_on_all_wheels(veh);
             if ok {
                 self.handbrake_since = Some(std::time::Instant::now());
             }

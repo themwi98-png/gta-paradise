@@ -120,6 +120,8 @@ fn load_destinations() -> Vec<Destination> {
 struct Settings {
     paradise: bool,
     start: Option<Vec3>,
+    /// The car the player starts in (a vehicle model name), if any.
+    start_car: Option<String>,
     wreck: wreck::WreckSettings,
     boost: boost::BoostSettings,
     /// Gravity on airborne vehicles, times normal.
@@ -142,7 +144,7 @@ struct Settings {
 
 fn load_settings() -> Settings {
     let text = std::fs::read_to_string("paradise.ini").unwrap_or_default();
-    let mut s = Settings { paradise: true, start: None, wreck: Default::default(), boost: Default::default(), air_gravity: 3.0, downforce: 0.75, drift: Default::default(), air: Default::default(), car_top: physics::BAKED_TOP, car_power: physics::BAKED_POWER, traffic: 1.0, police: Default::default(), debug_log: false, perf: true };
+    let mut s = Settings { paradise: true, start: None, start_car: None, wreck: Default::default(), boost: Default::default(), air_gravity: 3.0, downforce: 0.75, drift: Default::default(), air: Default::default(), car_top: physics::BAKED_TOP, car_power: physics::BAKED_POWER, traffic: 1.0, police: Default::default(), debug_log: false, perf: true };
     for line in text.lines() {
         let p: Vec<&str> = line.split_whitespace().collect();
         let on = |v: &str| !(v.eq_ignore_ascii_case("off") || v == "0" || v.eq_ignore_ascii_case("false"));
@@ -161,6 +163,7 @@ fn load_settings() -> Settings {
             ["@wreck_speed", v, ..] => w.wreck_dv = num(v, w.wreck_dv),
             ["@impact_speed", v, ..] => w.impact_dv = num(v, w.impact_dv),
             ["@wreck_explode", v, ..] => w.explode = on(v),
+            ["@wreck_eject", v, ..] => w.eject = on(v),
             ["@respawn_speed", v, ..] => w.respawn_speed = num(v, w.respawn_speed),
             ["@crash_time", v, ..] => w.crash_time = num(v, w.crash_time),
             ["@slowmo", v, ..] => w.slowmo = num(v, w.slowmo).clamp(0.05, 1.0),
@@ -190,6 +193,7 @@ fn load_settings() -> Settings {
             ["@brake_drift", v, ..] => s.drift.brake_drift = on(v),
             ["@brake_drift_time", v, ..] => s.drift.brake_drift_time = num(v, s.drift.brake_drift_time).clamp(0.05, 3.0),
             ["@brake_drift_speed", v, ..] => s.drift.brake_drift_speed = num(v, s.drift.brake_drift_speed).max(0.0),
+            ["@brake_drift_steer", v, ..] => s.drift.brake_drift_steer = num(v, s.drift.brake_drift_steer).clamp(0.0, 1.0),
             ["@drift_angle", v, ..] => s.drift.max_angle = num(v, s.drift.max_angle).clamp(15.0, 85.0),
             ["@car_top_speed", v, ..] => s.car_top = num(v, s.car_top).clamp(0.5, 5.0),
             ["@car_power", v, ..] => s.car_power = num(v, s.car_power).clamp(0.5, 5.0),
@@ -199,6 +203,7 @@ fn load_settings() -> Settings {
             ["@police_top", v, ..] => s.police.top = num(v, s.police.top),
             ["@police_tough", v, ..] => s.police.tough = on(v),
             ["@mode", m, ..] => s.paradise = !m.eq_ignore_ascii_case("off"),
+            ["@start_car", m, ..] => s.start_car = (!["none", "off", "0"].iter().any(|o| m.eq_ignore_ascii_case(o))).then(|| m.to_string()),
             ["@start", x, y, z, ..] => {
                 if let (Ok(x), Ok(y), Ok(z)) = (x.parse(), y.parse(), z.parse()) {
                     s.start = Some(Vec3::new(x, y, z));
@@ -405,6 +410,49 @@ struct State {
     last_log: i32,
 }
 
+/// Puts the player in a new `model` at `at` (on the nearest road if one is
+/// close, facing along it), while the screen is still black at the start.
+/// A car the player was already in is moved aside.
+fn start_in_car(model: &str, at: Vec3) {
+    let hash = propshield::joaat(model);
+    if !n::is_model_in_cdimage(hash) || !n::is_model_a_vehicle(hash) {
+        log(&format!("start car: no vehicle model '{model}' in this game"));
+        return;
+    }
+    let ped = n::player_ped_id();
+    let t0 = n::get_game_timer();
+    n::request_model(hash);
+    while !n::has_model_loaded(hash) && n::get_game_timer() - t0 < 5000 {
+        n::request_model(hash);
+        shv::wait(0);
+    }
+    if !n::has_model_loaded(hash) {
+        log(&format!("start car: '{model}' didn't load"));
+        return;
+    }
+    let (pos, heading) = match n::closest_vehicle_node(at) {
+        Some((p, h)) if (p.x - at.x).hypot(p.y - at.y) < 15.0 && (p.z - at.z).abs() < 5.0 => (p, h),
+        _ => (at, n::get_entity_heading(ped)),
+    };
+    if n::is_ped_in_any_vehicle(ped) {
+        let old = n::get_vehicle_ped_is_in(ped);
+        n::clear_ped_tasks_immediately(ped);
+        let r = heading.to_radians();
+        n::set_entity_coords(old, Vec3::new(pos.x + r.cos() * 6.0, pos.y + r.sin() * 6.0, pos.z + 0.5));
+    }
+    let car = n::create_vehicle(hash, Vec3::new(pos.x, pos.y, pos.z + 0.5), heading);
+    if car == 0 {
+        log(&format!("start car: couldn't create '{model}'"));
+        return;
+    }
+    n::set_vehicle_on_ground_properly(car);
+    n::set_ped_into_vehicle(ped, car);
+    n::set_vehicle_engine_on(car);
+    n::set_vehicle_as_no_longer_needed(car);
+    n::set_model_as_no_longer_needed(hash);
+    log(&format!("start car: in a {model} at ({:.1}, {:.1}, {:.1})", pos.x, pos.y, pos.z));
+}
+
 /// Teleports, holds the entity frozen while collision streams, then probes.
 fn teleport(state: &mut State, dest: &Destination) {
     let ped = n::player_ped_id();
@@ -514,6 +562,9 @@ extern "C" fn script_main() {
         }
         if let Some(d) = &start {
             base_map_check(d.pos);
+            if let Some(model) = &settings.start_car {
+                start_in_car(model, d.pos);
+            }
         }
         end_arrival_scene();
         n::do_screen_fade_in(800);
@@ -638,9 +689,10 @@ extern "C" fn script_main() {
         if state.held.is_none() {
             let driving = if n::is_ped_in_any_vehicle(ped) { n::get_vehicle_ped_is_in(ped) } else { 0 };
             let driven = if driving != 0 && n::get_ped_in_vehicle_seat(driving, -1) == ped { driving } else { 0 };
-            // A driver can't be killed by a crash or thrown out of the car:
-            // a crash bad enough is a wreck, which respawns them, and dying
-            // in it as well ran GTA's "wasted" on top of the wreck.
+            // A driver can't be killed by a crash (a crash bad enough is a
+            // wreck, which respawns them, and dying in it as well ran GTA's
+            // "wasted" on top of the wreck), and is only thrown through the
+            // windscreen in a wreck (wreck.rs, @wreck_eject).
             if protected != (ped, driven != 0) {
                 protected = (ped, driven != 0);
                 n::set_collision_proof(ped, driven != 0);

@@ -107,6 +107,7 @@ The ones you're most likely to want:
 | `@slowmo` | 0.15 | Game speed during the wreck slow motion (1 = normal) |
 | `@crash_time` | 5 | Seconds of slow motion before the respawn |
 | `@precrash` | on | Start the slow motion just before a wreck you can't avoid |
+| `@wreck_eject` | on | In a wreck you can fly through the windscreen (never in a normal crash) |
 | `@boost_seconds` | 15 | How long a full boost gauge lasts |
 | `@boost_fill` | 1.5 | How fast the boost gauge refills (2 = twice as fast) |
 | `@air_gravity` | 3 | How hard cars in the air are pulled down (1 = normal GTA) |
@@ -114,11 +115,13 @@ The ones you're most likely to want:
 | `@barrel_roll_trigger` | 90 | How hard a split ramp must roll you for a barrel roll (higher = fewer) |
 | `@downforce` | 0.75 | Grip from downforce at speed (0 = none, 2 = glued down) |
 | `@drift_assist` | 1.1 | Drift help: holds slides steady (0 = off, up to 3) |
-| `@brake_drift` | on | Tapping the brake while moving starts a drift, Burnout style |
+| `@brake_drift` | on | Tapping the brake while turning starts a drift, Burnout style |
+| `@brake_drift_steer` | 0.3 | How far you must be steering for that (0 = going straight too) |
 | `@car_grip` | 1.2 | Grip, times GTA's (re-run the setup after changing) |
-| `@car_brakes` | 1.75 | Braking power, times GTA's (re-run the setup after changing) |
+| `@car_brakes` | 2.5 | Braking power, times GTA's (re-run the setup after changing) |
 | `@traffic` | 1 | Amount of traffic (0 = empty roads, up to 3) |
-| `@police_power` | 2 | Engine power of police cars chasing you |
+| `@police_power` | 1 | Engine power of police cars chasing you, times GTA's |
+| `@start_car` | drifttampa | The car you start in (any GTA vehicle model; `none` = on foot) |
 | `@mode` | paradise | `off` gives you normal GTA V back without uninstalling |
 
 Every setting is described in the file itself and in

@@ -49,7 +49,7 @@ pub struct PoliceSettings {
 
 impl Default for PoliceSettings {
     fn default() -> Self {
-        Self { power: 2.0, top: 100.0, tough: true }
+        Self { power: 1.0, top: 100.0, tough: true }
     }
 }
 

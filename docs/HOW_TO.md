@@ -39,7 +39,9 @@ the part to keep.
 2. Click a lane to select it (cyan; the info box shows id, length, speed and
    what it leads to). Shift+click adds to the selection.
 3. Tools for the selection: **Reverse**, **Delete** / **Restore**,
-   **◀ Shift / Shift ▶** (0.25 m sideways), **Set speed** (km/h).
+   **◀ Shift / Shift ▶** (0.25 m sideways), **Set speed** (km/h; the info box
+   shows GTA's speed band: slow under 40, normal 40–65, fast 65–97, fastest
+   above, and traffic only drives differently when the band changes).
    **Set traffic** (0–9, Burnout's scale: how much traffic starts on the
    lane; 0 = none). **Colour by traffic** shows every lane's level (grey
    none, blue quiet … red busy); **Select area** then two clicks on the
@@ -52,8 +54,13 @@ the part to keep.
    3 m (traffic flows on into it). New lanes are 48 km/h — change with Set
    speed. Long straight bits don't need extra points over hills or
    bridges: the build lays drawn lanes onto the road surface.
-6. Parked cars: select one, **Delete**, **Move car** (then click the new
-   spot) or **↺ / ↻ 15°**; **Add parked car** then click the spot.
+6. Parked vehicles (click anywhere on one to select it): **Delete**,
+   **Move car** (then click the new spot) or **↺ / ↻ 15°**; **Add parked car**
+   then click the spot. **Copy cars** / **Paste cars** (Ctrl+C / Ctrl+V):
+   each paste lands 3 m to the side of the last. Type a vehicle model (e.g.
+   `maverick`, `luxor`, `dinghy`, `blazer`) and **Set vehicle** to make the
+   selected spots always that vehicle (orange; empty box = any car again), or
+   type it before **Add parked car**. Boats go on water; aircraft need room.
 7. **Export edits** → `tools/edits/traffic_edits.json`.
 8. Rebuild: `bash gta-paradise/tools/rebuild_traffic.sh`
 

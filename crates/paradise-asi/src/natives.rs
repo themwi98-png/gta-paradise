@@ -929,3 +929,20 @@ pub fn get_entity_height_above_ground(entity: i32) -> f32 {
 pub fn set_entity_no_collision_entity(a: i32, b: i32, this_frame: bool) {
     call(0xA53ED5520C07654A, args!(a, b, this_frame));
 }
+
+pub fn is_ped_ragdoll(ped: i32) -> bool {
+    ret_bool(call(0x47E4E977581C5B55, args!(ped)))
+}
+
+pub fn point_cam_at_coord(cam: i32, p: Vec3) {
+    call(0xF75497BB865F0803, args!(cam, p.x, p.y, p.z));
+}
+
+/// IS_MODEL_IN_CDIMAGE: the game has this model.
+pub fn is_model_in_cdimage(model: u32) -> bool {
+    ret_bool(call(0x35B9E0803292B641, args!(model)))
+}
+
+pub fn is_model_a_vehicle(model: u32) -> bool {
+    ret_bool(call(0x19AAC8F07BFEC53E, args!(model)))
+}
