@@ -29,6 +29,9 @@ struct Step {
     /// Anything else its fingerprint covers (files outside the working folder).
     extra: fn(&Ctx) -> String,
     run: fn(&Ctx) -> Result<()>,
+    /// Part of the Paradise City map: not needed for Los Santos with only
+    /// the Burnout driving.
+    map: bool,
 }
 
 fn nothing(_: &Ctx) -> String {
@@ -69,6 +72,7 @@ fn installed(c: &Ctx) -> String {
     // A deleted paradise.ini (to get the defaults back) is put back. Its
     // contents aren't covered: changing settings shouldn't reinstall.
     ids.push(g.join("paradise.ini").is_file().to_string());
+    ids.push(format!("{:?}", c.map()));
     ids.join("|")
 }
 
@@ -80,10 +84,10 @@ const STEPS: &[Step] = &[
         deps: &[],
         outputs: &["out/gta_col", "out/gta_col_xml/paradise_col.bin"],
         extra: nothing,
-        run: collision,
+        run: collision, map: true,
     },
-    Step { name: "visual", title: "City models and textures (the long one)", inputs: &[], deps: &[], outputs: &["out/gta_vis", "out/meta_vis"], extra: nothing, run: visual },
-    Step { name: "cargens", title: "Parked cars", inputs: &["tools/edits/traffic_edits.json"], deps: &[], outputs: &["out/meta_cargens"], extra: nothing, run: cargens },
+    Step { name: "visual", title: "City models and textures (the long one)", inputs: &[], deps: &[], outputs: &["out/gta_vis", "out/meta_vis"], extra: nothing, run: visual, map: true },
+    Step { name: "cargens", title: "Parked cars", inputs: &["tools/edits/traffic_edits.json"], deps: &[], outputs: &["out/meta_cargens"], extra: nothing, run: cargens, map: true },
     Step {
         name: "props",
         title: "Street props",
@@ -91,9 +95,9 @@ const STEPS: &[Step] = &[
         deps: &[],
         outputs: &["out/meta_props", "out/props/paradise_props.csv"],
         extra: nothing,
-        run: props,
+        run: props, map: true,
     },
-    Step { name: "pack", title: "Map package", inputs: &[], deps: &["collision", "visual", "cargens", "props"], outputs: &["out/dlc/bpparadise/dlc.rpf"], extra: nothing, run: pack },
+    Step { name: "pack", title: "Map package", inputs: &[], deps: &["collision", "visual", "cargens", "props"], outputs: &["out/dlc/bpparadise/dlc.rpf"], extra: nothing, run: pack, map: true },
     Step {
         name: "water",
         title: "Sea and lakes",
@@ -101,9 +105,9 @@ const STEPS: &[Step] = &[
         deps: &[],
         outputs: &["out/water_paradise.xml"],
         extra: nothing,
-        run: water,
+        run: water, map: true,
     },
-    Step { name: "paths", title: "Roads and traffic", inputs: &["tools/edits/traffic_edits.json", COL], deps: &[], outputs: &["out/gta_paths"], extra: nothing, run: paths },
+    Step { name: "paths", title: "Roads and traffic", inputs: &["tools/edits/traffic_edits.json", COL], deps: &[], outputs: &["out/gta_paths"], extra: nothing, run: paths, map: true },
     Step {
         name: "navmesh",
         title: "Pedestrian paths",
@@ -111,9 +115,9 @@ const STEPS: &[Step] = &[
         deps: &[],
         outputs: &["out/gta_navmesh"],
         extra: nothing,
-        run: navmesh,
+        run: navmesh, map: true,
     },
-    Step { name: "handling", title: "Car handling", inputs: &[], deps: &[], outputs: &["out/crash/update/common/data/handling.meta"], extra: handling_args, run: handling },
+    Step { name: "handling", title: "Car handling", inputs: &[], deps: &[], outputs: &["out/crash/update/common/data/handling.meta"], extra: handling_args, run: handling, map: false },
     Step {
         name: "install",
         title: "Installing into GTA V",
@@ -121,7 +125,7 @@ const STEPS: &[Step] = &[
         deps: &["pack", "water", "paths", "navmesh", "handling"],
         outputs: &[],
         extra: installed,
-        run: install,
+        run: install, map: false,
     },
 ];
 
@@ -129,9 +133,49 @@ pub struct Ctx<'a> {
     layout: &'a Layout,
     games: &'a Games,
     log: std::cell::RefCell<std::fs::File>,
+    /// The map chosen for this run (None: as the player's paradise.ini says).
+    map: Option<Map>,
+}
+
+/// Which map is installed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Map {
+    /// Paradise City replaces Los Santos.
+    Paradise,
+    /// GTA's own Los Santos, with only the Burnout driving (handling, ground
+    /// materials and the plugin's crashes, boost, drifting...).
+    LosSantos,
+}
+
+impl Map {
+    fn ini_value(self) -> &'static str {
+        match self {
+            Map::Paradise => "paradise",
+            Map::LosSantos => "los_santos",
+        }
+    }
+}
+
+/// The map a paradise.ini asks for (`@mode paradise|los_santos`; `off` is
+/// Los Santos too). None without one.
+fn ini_map(text: &str) -> Option<Map> {
+    let line = text.lines().find(|l| l.split_whitespace().next().is_some_and(|k| k.eq_ignore_ascii_case("@mode")))?;
+    let v = line.split_whitespace().nth(1)?.to_ascii_lowercase();
+    Some(if matches!(v.as_str(), "off" | "los_santos" | "ls" | "lossantos") { Map::LosSantos } else { Map::Paradise })
+}
+
+/// The map installed in this GTA folder now (Paradise City unless its
+/// paradise.ini says otherwise).
+pub fn installed_map(gta: &Path) -> Map {
+    std::fs::read_to_string(gta.join("paradise.ini")).ok().and_then(|t| ini_map(&t)).unwrap_or(Map::Paradise)
 }
 
 impl Ctx<'_> {
+    /// The map to install.
+    fn map(&self) -> Map {
+        self.map.unwrap_or_else(|| installed_map(&self.games.gta))
+    }
+
     fn path(&self, rel: &str) -> PathBuf {
         self.layout.root.join(rel)
     }
@@ -254,6 +298,8 @@ pub enum State {
     /// Done, in this many seconds.
     Done(u64),
     Failed,
+    /// Not needed: the Paradise City map, for a Los Santos install.
+    NotNeeded,
 }
 
 /// Progress: step number (from 0), its title, and how it's going.
@@ -276,7 +322,9 @@ pub fn log_tail(layout: &Layout, n: usize) -> Vec<String> {
     tail
 }
 
-pub fn run_all(layout: &Layout, games: &Games, only: Option<&[String]>, rebuild: bool, report: Report) -> Result<()> {
+/// Builds and installs. `map`: the map to install (None: the one the
+/// player's paradise.ini says, Paradise City if there's none).
+pub fn run_all(layout: &Layout, games: &Games, only: Option<&[String]>, rebuild: bool, map: Option<Map>, report: Report) -> Result<()> {
     if let Some(only) = only {
         for o in only {
             if !STEPS.iter().any(|s| s.name == o) {
@@ -287,8 +335,8 @@ pub fn run_all(layout: &Layout, games: &Games, only: Option<&[String]>, rebuild:
     std::fs::create_dir_all(layout.root.join("out/stamps"))?;
     let log_path = log_path(layout);
     let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)?;
-    let c = Ctx { layout, games, log: std::cell::RefCell::new(log) };
-    c.note(&format!("\n===== setup {SETUP_VERSION} ====="));
+    let c = Ctx { layout, games, log: std::cell::RefCell::new(log), map };
+    c.note(&format!("\n===== setup {SETUP_VERSION} ({:?}) =====", c.map()));
 
     // What every step depends on: this setup, the tools and the game folders.
     let mut tools = Fnv::new();
@@ -301,6 +349,10 @@ pub fn run_all(layout: &Layout, games: &Games, only: Option<&[String]>, rebuild:
 
     for (i, step) in STEPS.iter().enumerate() {
         if only.is_some_and(|o| !o.iter().any(|n| n == step.name)) {
+            continue;
+        }
+        if step.map && c.map() == Map::LosSantos {
+            report(i, step.title, State::NotNeeded);
             continue;
         }
         let fp = fingerprint(&c, step, tools)?;
@@ -492,15 +544,15 @@ fn install(c: &Ctx) -> Result<()> {
         bail!("GTA V is running and locks its files; close it and try again");
     }
     let g = c.gta();
+    let map = c.map();
     let mods_update = gta.join(r"mods\update\update.rpf");
     let mods_update_s = mods_update.to_string_lossy().into_owned();
 
-    std::fs::create_dir_all(gta.join(r"mods\update\x64\dlcpacks\bpparadise"))?;
-    std::fs::copy(c.path("out/dlc/bpparadise/dlc.rpf"), gta.join(r"mods\update\x64\dlcpacks\bpparadise\dlc.rpf"))?;
-
     // The mods folder's update.rpf: a copy of Rockstar's, made again when
-    // Rockstar updates theirs. One that was there before the mod (another
+    // Rockstar updates theirs, and always for Los Santos (so nothing of the
+    // Paradise map is left in it). One that was there before the mod (another
     // mod's) is backed up first.
+    std::fs::create_dir_all(gta.join(r"mods\update"))?;
     let orig_update = gta.join(r"update\update.rpf");
     let stamp = c.path("out/stamps/mods_update_source");
     let ours = std::fs::read_to_string(&stamp).ok();
@@ -512,61 +564,19 @@ fn install(c: &Ctx) -> Result<()> {
             std::fs::copy(&mods_update, &backup)?;
         }
     }
-    if !mods_update.is_file() || ours.as_deref().is_some_and(|s| s != file_id(&orig_update)) {
+    if map == Map::LosSantos || !mods_update.is_file() || ours.as_deref().is_some_and(|s| s != file_id(&orig_update)) {
         c.note("copying update.rpf into the mods folder");
         std::fs::copy(&orig_update, &mods_update)?;
     }
     std::fs::write(&stamp, file_id(&orig_update))?;
-    c.cw(&["dlclist-add", &g, "bpparadise", &mods_update_s, "--open"])?;
 
-    // Los Santos out: its archives dropped from the level's file lists
-    // (always starting from Rockstar's untouched files).
-    std::fs::create_dir_all(c.path("out/base_meta"))?;
-    c.cw(&["extract", &g, r"update\update.rpf\common\data\levels\gta5\images.meta", "out/base_meta/images.orig.meta"])?;
-    c.cw(&["extract", &g, r"update\update.rpf\common\data\levels\gta5\gta5.meta", "out/base_meta/gta5.orig.meta"])?;
-    c.bpx(&["strip-base-map", "tools/base_map_disable.txt", "out/base_meta/images.orig.meta", "out/base_meta/gta5.orig.meta", "out/base_meta"])?;
-    c.cw(&["rpf-put", &g, &mods_update_s, "common/data/levels/gta5/images.meta", "out/base_meta/images.meta", "--open"])?;
-    c.cw(&["rpf-put", &g, &mods_update_s, "common/data/levels/gta5/gta5.meta", "out/base_meta/gta5.meta", "--open"])?;
-
-    // Rockstar's patch packs re-add updated Los Santos sectors: the mods
-    // folder gets a copy of each with those taken out.
-    let packs = std::fs::read_to_string(c.path("tools/base_map_packs.txt"))?;
-    for p in packs.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-        let src = gta.join(format!(r"update\x64\dlcpacks\{p}\dlc.rpf"));
-        if !src.is_file() {
-            continue;
-        }
-        let dst = gta.join(format!(r"mods\update\x64\dlcpacks\{p}\dlc.rpf"));
-        let stamp = c.path(&format!("out/stamps/pack_{p}"));
-        if !dst.is_file() || std::fs::read_to_string(&stamp).ok() != Some(file_id(&src)) {
-            std::fs::create_dir_all(dst.parent().unwrap())?;
-            std::fs::copy(&src, &dst)?;
-            std::fs::write(&stamp, file_id(&src))?;
-        }
-        let dst_s = dst.to_string_lossy().into_owned();
-        let (orig, out) = (format!("out/base_meta/{p}.orig.xml"), format!("out/base_meta/{p}.xml"));
-        c.cw(&["extract", &g, &format!(r"update\x64\dlcpacks\{p}\dlc.rpf\content.xml"), &orig])?;
-        c.bpx(&["strip-base-map", "pack", &orig, &out])?;
-        c.cw(&["rpf-put", &g, &dst_s, "content.xml", &out, "--open"])?;
-        // The game still mounts some of these archives with no data file
-        // naming them, so they're emptied as well.
-        c.cw(&["rpf-empty", &g, &dst_s, r"levels/gta5/(_citye|_cityw|_hills)/|levels/gta5/[^/]*_additions[^/]*\.rpf$", "--open"])?;
+    match map {
+        Map::Paradise => install_map(c, &mods_update_s)?,
+        Map::LosSantos => remove_map(c)?,
     }
 
-    // Roads, pedestrian paths (navmeshes0 holds ours; 1-9 are emptied).
-    c.cw(&["rpf-replace", &g, &mods_update_s, "x64/levels/gta5/paths.rpf", "out/gta_paths", "--open"])?;
-    c.cw(&["rpf-replace", &g, &mods_update_s, "x64/levels/gta5/navmeshes0.rpf", "out/gta_navmesh", "--open"])?;
-    std::fs::create_dir_all(c.path("out/empty_dir_unused"))?;
-    for i in 1..=9 {
-        c.cw(&["rpf-replace", &g, &mods_update_s, &format!("x64/levels/gta5/navmeshes{i}.rpf"), "out/empty_dir_unused", "--open"])?;
-    }
-
-    // Population zones from Burnout's districts.
-    c.cw(&["extract", &g, r"update\update.rpf\common\data\levels\gta5\popzone.ipl", "out/base_meta/popzone.orig.ipl"])?;
-    c.bpx(&["popzone", &c.burnout(), "out/base_meta/popzone.orig.ipl", "out/popzone_paradise.ipl"])?;
-    c.cw(&["rpf-put", &g, &mods_update_s, "common/data/levels/gta5/popzone.ipl", "out/popzone_paradise.ipl", "--open"])?;
-
-    // Sand, dirt, grass... as fast as the road.
+    // The Burnout driving, either way. Sand, dirt, grass... as fast as the
+    // road.
     c.cw(&["extract", &g, r"update\update.rpf\common\data\materials\materials.dat", "out/base_meta/materials.orig.dat"])?;
     c.bpx(&["ground-materials", "out/base_meta/materials.orig.dat", "out/materials_paradise.dat"])?;
     c.cw(&["rpf-put", &g, &mods_update_s, "common/data/materials/materials.dat", "out/materials_paradise.dat", "--open"])?;
@@ -590,23 +600,130 @@ fn install(c: &Ctx) -> Result<()> {
         let rel = f.strip_prefix(&crash)?.to_string_lossy().replace('\\', "/");
         c.cw(&["rpf-put", &g, &mods_update_s, &rel, &f.to_string_lossy(), "--open"])?;
     }
-    c.cw(&["rpf-put", &g, &mods_update_s, "common/data/levels/gta5/water.xml", "out/water_paradise.xml", "--open"])?;
 
-    // The plugin and its files next to GTA5.exe.
+    // The plugin and its files next to GTA5.exe; paradise.ini says which
+    // map is installed (the plugin only brings Paradise City in for it).
     std::fs::copy(&c.layout.asi, gta.join("paradise.asi"))?;
     let new_ini = std::fs::read_to_string(c.path("tools/paradise.ini"))?;
     let ini = match std::fs::read_to_string(gta.join("paradise.ini")) {
         Ok(old) => merge_ini(&new_ini, &old),
         Err(_) => new_ini,
     };
-    std::fs::write(gta.join("paradise.ini"), ini)?;
-    std::fs::copy(c.path("out/gta_col_xml/paradise_col.bin"), gta.join("paradise_col.bin"))?;
-    std::fs::copy(c.path("out/props/paradise_props.csv"), gta.join("paradise_props.csv"))?;
-    if c.path("tools/edits/spawn_blocks.json").is_file() {
-        std::fs::copy(c.path("tools/edits/spawn_blocks.json"), gta.join("paradise_spawn_blocks.json"))?;
+    std::fs::write(gta.join("paradise.ini"), set_ini_map(&ini, map))?;
+    let map_files = [
+        ("out/gta_col_xml/paradise_col.bin", "paradise_col.bin"),
+        ("out/props/paradise_props.csv", "paradise_props.csv"),
+        ("tools/edits/spawn_blocks.json", "paradise_spawn_blocks.json"),
+    ];
+    for (from, to) in map_files {
+        if map == Map::Paradise && c.path(from).is_file() {
+            std::fs::copy(c.path(from), gta.join(to))?;
+        } else if map == Map::LosSantos && gta.join(to).is_file() {
+            std::fs::remove_file(gta.join(to))?;
+        }
     }
-    c.note("installed");
+    c.note(&format!("installed ({map:?})"));
     Ok(())
+}
+
+/// The Paradise City map: its package, Los Santos taken out, roads,
+/// pedestrian paths, zones and water.
+fn install_map(c: &Ctx, mods_update_s: &str) -> Result<()> {
+    let gta = &c.games.gta;
+    let g = c.gta();
+    std::fs::create_dir_all(gta.join(r"mods\update\x64\dlcpacks\bpparadise"))?;
+    std::fs::copy(c.path("out/dlc/bpparadise/dlc.rpf"), gta.join(r"mods\update\x64\dlcpacks\bpparadise\dlc.rpf"))?;
+    c.cw(&["dlclist-add", &g, "bpparadise", mods_update_s, "--open"])?;
+
+    // Los Santos out: its archives dropped from the level's file lists
+    // (always starting from Rockstar's untouched files).
+    std::fs::create_dir_all(c.path("out/base_meta"))?;
+    c.cw(&["extract", &g, r"update\update.rpf\common\data\levels\gta5\images.meta", "out/base_meta/images.orig.meta"])?;
+    c.cw(&["extract", &g, r"update\update.rpf\common\data\levels\gta5\gta5.meta", "out/base_meta/gta5.orig.meta"])?;
+    c.bpx(&["strip-base-map", "tools/base_map_disable.txt", "out/base_meta/images.orig.meta", "out/base_meta/gta5.orig.meta", "out/base_meta"])?;
+    c.cw(&["rpf-put", &g, mods_update_s, "common/data/levels/gta5/images.meta", "out/base_meta/images.meta", "--open"])?;
+    c.cw(&["rpf-put", &g, mods_update_s, "common/data/levels/gta5/gta5.meta", "out/base_meta/gta5.meta", "--open"])?;
+
+    // Rockstar's patch packs re-add updated Los Santos sectors: the mods
+    // folder gets a copy of each with those taken out.
+    for p in patch_packs(c)? {
+        let src = gta.join(format!(r"update\x64\dlcpacks\{p}\dlc.rpf"));
+        if !src.is_file() {
+            continue;
+        }
+        let dst = gta.join(format!(r"mods\update\x64\dlcpacks\{p}\dlc.rpf"));
+        let stamp = c.path(&format!("out/stamps/pack_{p}"));
+        if !dst.is_file() || std::fs::read_to_string(&stamp).ok() != Some(file_id(&src)) {
+            std::fs::create_dir_all(dst.parent().unwrap())?;
+            std::fs::copy(&src, &dst)?;
+            std::fs::write(&stamp, file_id(&src))?;
+        }
+        let dst_s = dst.to_string_lossy().into_owned();
+        let (orig, out) = (format!("out/base_meta/{p}.orig.xml"), format!("out/base_meta/{p}.xml"));
+        c.cw(&["extract", &g, &format!(r"update\x64\dlcpacks\{p}\dlc.rpf\content.xml"), &orig])?;
+        c.bpx(&["strip-base-map", "pack", &orig, &out])?;
+        c.cw(&["rpf-put", &g, &dst_s, "content.xml", &out, "--open"])?;
+        // The game still mounts some of these archives with no data file
+        // naming them, so they're emptied as well.
+        c.cw(&["rpf-empty", &g, &dst_s, r"levels/gta5/(_citye|_cityw|_hills)/|levels/gta5/[^/]*_additions[^/]*\.rpf$", "--open"])?;
+    }
+
+    // Roads, pedestrian paths (navmeshes0 holds ours; 1-9 are emptied).
+    c.cw(&["rpf-replace", &g, mods_update_s, "x64/levels/gta5/paths.rpf", "out/gta_paths", "--open"])?;
+    c.cw(&["rpf-replace", &g, mods_update_s, "x64/levels/gta5/navmeshes0.rpf", "out/gta_navmesh", "--open"])?;
+    std::fs::create_dir_all(c.path("out/empty_dir_unused"))?;
+    for i in 1..=9 {
+        c.cw(&["rpf-replace", &g, mods_update_s, &format!("x64/levels/gta5/navmeshes{i}.rpf"), "out/empty_dir_unused", "--open"])?;
+    }
+
+    // Population zones from Burnout's districts.
+    c.cw(&["extract", &g, r"update\update.rpf\common\data\levels\gta5\popzone.ipl", "out/base_meta/popzone.orig.ipl"])?;
+    c.bpx(&["popzone", &c.burnout(), "out/base_meta/popzone.orig.ipl", "out/popzone_paradise.ipl"])?;
+    c.cw(&["rpf-put", &g, mods_update_s, "common/data/levels/gta5/popzone.ipl", "out/popzone_paradise.ipl", "--open"])?;
+    c.cw(&["rpf-put", &g, mods_update_s, "common/data/levels/gta5/water.xml", "out/water_paradise.xml", "--open"])
+}
+
+/// Los Santos: the Paradise map package and this mod's copies of Rockstar's
+/// patch packs come out of the mods folder (the game then uses Rockstar's
+/// own). The mods update.rpf is already a fresh copy of Rockstar's.
+fn remove_map(c: &Ctx) -> Result<()> {
+    let gta = &c.games.gta;
+    let pack = gta.join(r"mods\update\x64\dlcpacks\bpparadise");
+    if pack.exists() {
+        std::fs::remove_dir_all(&pack)?;
+    }
+    std::fs::create_dir_all(c.path("out/base_meta"))?;
+    for p in patch_packs(c)? {
+        let stamp = c.path(&format!("out/stamps/pack_{p}"));
+        let dst = gta.join(format!(r"mods\update\x64\dlcpacks\{p}"));
+        // Only copies this mod made.
+        if stamp.is_file() && dst.join("dlc.rpf").is_file() {
+            std::fs::remove_file(dst.join("dlc.rpf"))?;
+            let _ = std::fs::remove_dir(&dst);
+        }
+        let _ = std::fs::remove_file(stamp);
+    }
+    Ok(())
+}
+
+/// Rockstar's patch packs that re-add Los Santos (tools/base_map_packs.txt).
+fn patch_packs(c: &Ctx) -> Result<Vec<String>> {
+    let packs = std::fs::read_to_string(c.path("tools/base_map_packs.txt"))?;
+    Ok(packs.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(str::to_string).collect())
+}
+
+/// paradise.ini with `@mode` saying which map is installed.
+fn set_ini_map(ini: &str, map: Map) -> String {
+    let mut out = String::new();
+    for line in ini.lines() {
+        if line.split_whitespace().next().is_some_and(|k| k.eq_ignore_ascii_case("@mode")) {
+            out.push_str(&format!("@mode {}", map.ini_value()));
+        } else {
+            out.push_str(line);
+        }
+        out.push_str("\r\n");
+    }
+    out
 }
 
 #[cfg(test)]
@@ -616,6 +733,14 @@ mod tests {
         let new = "# boost\n@boost on\n@boost_fill 1.5\n@new_thing 3\n";
         let old = "@boost_fill 2.5\n@gone 1\n";
         assert_eq!(super::merge_ini(new, old), "# boost\r\n@boost on\r\n@boost_fill 2.5\r\n@new_thing 3\r\n");
+    }
+
+    #[test]
+    fn ini_map_line() {
+        use super::{ini_map, set_ini_map, Map};
+        assert_eq!(ini_map("# x\n@mode off\n"), Some(Map::LosSantos));
+        assert_eq!(ini_map("@mode paradise\n"), Some(Map::Paradise));
+        assert_eq!(set_ini_map("# a\n@mode paradise\n@x 1\n", Map::LosSantos), "# a\r\n@mode los_santos\r\n@x 1\r\n");
     }
 
     #[test]

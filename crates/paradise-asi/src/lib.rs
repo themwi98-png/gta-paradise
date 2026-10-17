@@ -10,8 +10,10 @@
 //!   game has loaded this calls ON_ENTER_SP, which applies GROUP_MAP_SP where
 //!   the Paradise map lives (and, when built that way, removes Los Santos).
 //!   The player is moved to `@start` first so nothing is standing in Los
-//!   Santos while it is swapped out. `@mode off` in paradise.ini skips all of
-//!   this, leaving normal GTA. F10 calls ON_ENTER_SP again. (ON_ENTER_MP is deliberately
+//!   Santos while it is swapped out. `@mode los_santos` in paradise.ini (set
+//!   by the setup when the player picks Los Santos: then no map is installed,
+//!   only the driving) skips all of this, and the start car, the spawn guard
+//!   and the rescue / respawn handling, leaving GTA's Los Santos as it is. F10 calls ON_ENTER_SP again. (ON_ENTER_MP is deliberately
 //!   not offered: loading Online map content crashed this install.)
 //! - F4 toggles the collision overlay (nearby Paradise collision drawn as
 //!   translucent coloured surfaces, from `paradise_col.bin`); off at start.
@@ -202,7 +204,7 @@ fn load_settings() -> Settings {
             ["@police_power", v, ..] => s.police.power = num(v, s.police.power),
             ["@police_top", v, ..] => s.police.top = num(v, s.police.top),
             ["@police_tough", v, ..] => s.police.tough = on(v),
-            ["@mode", m, ..] => s.paradise = !m.eq_ignore_ascii_case("off"),
+            ["@mode", m, ..] => s.paradise = !["off", "los_santos", "ls", "lossantos"].iter().any(|o| m.eq_ignore_ascii_case(o)),
             ["@start_car", m, ..] => s.start_car = (!["none", "off", "0"].iter().any(|o| m.eq_ignore_ascii_case(o))).then(|| m.to_string()),
             ["@start", x, y, z, ..] => {
                 if let (Ok(x), Ok(y), Ok(z)) = (x.parse(), y.parse(), z.parse()) {
@@ -541,8 +543,8 @@ extern "C" fn script_main() {
         shv::wait(3000);
     }
     if !settings.paradise {
-        log("@mode off: Paradise map not applied");
-        state.status = "Paradise mode off (paradise.ini). Normal GTA.".into();
+        log("@mode los_santos: Los Santos with the Burnout driving only");
+        state.status = "Los Santos (paradise.ini @mode). Burnout driving only.".into();
     } else {
         let start = settings.start.map(|pos| Destination { name: "start".into(), pos });
         if let Some(d) = &start {

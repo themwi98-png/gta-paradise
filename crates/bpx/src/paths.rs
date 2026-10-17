@@ -1051,7 +1051,7 @@ fn merge_diamonds(adj: &mut [BTreeMap<usize, (u8, u8)>], pos: &[[f32; 3]]) -> us
 }
 
 /// `bpx traffic-json`: Burnout traffic for the viewer traffic editor
-/// (tools/viewer/traffic.js), unedited and in Burnout coordinates (y up):
+/// (paradise-viewer's traffic.js), unedited and in Burnout coordinates (y up):
 /// `{"lanes": [{"id": "hull:section", "pts": [x, y, z, ...] lane centre,
 /// "width": m, "speed": m/s, "traffic": vehicles per minute, "next": [ids]}], "parked": [{"id": "hull:index",
 /// "pos": [x, y, z], "dir": [dx, dz]}]}`.

@@ -107,7 +107,9 @@ fn sync_data(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Folders the player confirmed last time.
+/// Folders the player confirmed last time, and the working folder the mod
+/// was built in (`work`: the Paradise Viewer loads the mod's map edits from
+/// its tools\edits).
 fn config_path() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|l| PathBuf::from(l).join("GTA-Paradise").join("setup.json"))
 }
@@ -119,10 +121,11 @@ pub fn remembered() -> [Option<PathBuf>; 3] {
     ["gta", "burnout", "codewalker"].map(|k| config[k].as_str().map(PathBuf::from))
 }
 
-pub fn remember(g: &Games) -> Result<()> {
+pub fn remember(g: &Games, layout: &Layout) -> Result<()> {
     let Some(p) = config_path() else { return Ok(()) };
     std::fs::create_dir_all(p.parent().unwrap())?;
-    std::fs::write(p, serde_json::to_vec_pretty(&serde_json::json!({ "gta": g.gta, "burnout": g.burnout, "codewalker": g.codewalker }))?)?;
+    let config = serde_json::json!({ "gta": g.gta, "burnout": g.burnout, "codewalker": g.codewalker, "work": layout.root });
+    std::fs::write(p, serde_json::to_vec_pretty(&config)?)?;
     Ok(())
 }
 

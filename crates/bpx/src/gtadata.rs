@@ -297,7 +297,7 @@ pub fn strip_base_map(list: &Path, images: &Path, gta5: &Path, out: &Path) -> Re
 // --- Population zones -----------------------------------------------------
 
 /// Where the district grid lies in GTA's world (lined up by hand in
-/// tools/viewer/district_aligner.html; the mainland and the island are
+/// the viewer's district_aligner.html (paradise-viewer); the mainland and the island are
 /// painted at different scales): cell size x / y, west and north edge.
 struct Align {
     cx: f64,

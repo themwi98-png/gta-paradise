@@ -237,7 +237,7 @@ pub fn export(col: &Path, out: &Path, units: Option<&[u32]>, base: Option<&Path>
         let empty = HashSet::new();
         let unit_base = base_polys.as_ref().map(|m| m.get(&unit).unwrap_or(&empty));
         // Per triangle, the polygon's index in its unit (glTF primitive
-        // extras "polygonIds"): the stable id tools/viewer's collision editor
+        // extras "polygonIds"): the stable id the viewer's collision editor
         // uses for deletions, which the GTA build then skips.
         let mut by_surface: BTreeMap<(u8, bool), (Vec<[f32; 3]>, Vec<u32>, Vec<u32>)> = BTreeMap::new();
         for (poly_index, p) in mesh.polys.iter().enumerate() {

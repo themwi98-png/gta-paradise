@@ -1,7 +1,9 @@
 //! The GTA Paradise setup window: reminds the player what to install first,
 //! finds (or lets them pick) GTA V Legacy, Burnout Paradise Remastered and
 //! CodeWalker, then builds and installs with a step-by-step progress list.
-//! `--dev` runs from the project folder, like the console version.
+//! `--dev` runs from the project folder, like the console version. The
+//! player also picks the map: Paradise City, or GTA's own Los Santos with
+//! only the Burnout driving.
 
 #![windows_subsystem = "windows"]
 
@@ -55,22 +57,27 @@ struct App {
     folders: [Folder; 3],
     titles: Vec<&'static str>,
     progress: Option<Arc<Mutex<Progress>>>,
+    /// The map to install (starts as the one installed now).
+    map: steps::Map,
 }
 
 impl App {
     fn new(dev: bool) -> Self {
         let layout = Layout::new(dev).and_then(|l| l.check().map(|_| l)).map_err(|e| format!("{e:#}"));
         let [gta, burnout, codewalker] = paradise_setup::remembered();
+        let gta_found = find::detect_gta(gta.clone());
+        let map = gta_found.as_deref().map_or(steps::Map::Paradise, steps::installed_map);
         App {
             dev,
             layout,
             folders: [
-                Folder::new("GTA V (Legacy)", "the folder with GTA5.exe", find::detect_gta(gta), find::check_gta),
+                Folder::new("GTA V (Legacy)", "the folder with GTA5.exe", gta_found, find::check_gta),
                 Folder::new("Burnout Paradise Remastered", "the folder with BurnoutPR.exe", find::detect_burnout(burnout), find::check_burnout),
                 Folder::new("CodeWalker 3.0", "the unzipped CodeWalker folder", find::detect_codewalker(codewalker), find::check_codewalker),
             ],
             titles: steps::titles(),
             progress: None,
+            map,
         }
     }
 
@@ -83,11 +90,11 @@ impl App {
         let Some(games) = self.games() else { return };
         let progress = Arc::new(Mutex::new(Progress { states: vec![None; self.titles.len()], ..Default::default() }));
         self.progress = Some(progress.clone());
-        let (dev, ctx) = (self.dev, ctx.clone());
+        let (dev, ctx, map) = (self.dev, ctx.clone(), self.map);
         std::thread::spawn(move || {
             let result = (|| -> anyhow::Result<()> {
                 let layout = Layout::new(dev)?;
-                paradise_setup::remember(&games)?;
+                paradise_setup::remember(&games, &layout)?;
                 layout.prepare()?;
                 let report = |i: usize, _: &str, state: steps::State| {
                     let mut p = progress.lock().unwrap();
@@ -95,7 +102,7 @@ impl App {
                     p.states[i] = Some(state);
                     ctx.request_repaint();
                 };
-                let r = steps::run_all(&layout, &games, None, false, &report);
+                let r = steps::run_all(&layout, &games, None, false, Some(map), &report);
                 if r.is_err() {
                     progress.lock().unwrap().log_tail = steps::log_tail(&layout, 12);
                 }
@@ -180,6 +187,7 @@ impl App {
                     None => ui.label(egui::RichText::new("·").weak()),
                     Some(steps::State::Running) => ui.add(egui::Spinner::new().size(12.0)),
                     Some(steps::State::Failed) => ui.label(egui::RichText::new("✖").color(RED)),
+                    Some(steps::State::NotNeeded) => ui.label(egui::RichText::new("–").weak()),
                     Some(_) => ui.label(egui::RichText::new("✔").color(GREEN)),
                 };
                 ui.label(*title);
@@ -187,6 +195,7 @@ impl App {
                     Some(steps::State::Running) => p.running_since.map(|t| mmss(t.elapsed().as_secs())).unwrap_or_default(),
                     Some(steps::State::Done(s)) => mmss(*s),
                     Some(steps::State::UpToDate) => "up to date".into(),
+                    Some(steps::State::NotNeeded) => "not needed for Los Santos".into(),
                     _ => String::new(),
                 };
                 ui.label(egui::RichText::new(note).weak());
@@ -218,7 +227,20 @@ impl eframe::App for App {
                     self.folders_ui(ui);
                     ui.add_space(14.0);
                     let ready = self.games().is_some_and(|g| find::loaders(&g.gta) == (true, true));
-                    ui.label(egui::RichText::new("The first install converts the whole city: about 15-20 minutes and 10 GB of free disk space. Updates only redo what changed.").small().weak());
+                    ui.label(egui::RichText::new("Map").strong());
+                    ui.radio_value(&mut self.map, steps::Map::Paradise, "Paradise City (replaces Los Santos)");
+                    ui.radio_value(&mut self.map, steps::Map::LosSantos, "Los Santos, with only the Burnout driving");
+                    ui.label(
+                        egui::RichText::new("Los Santos keeps GTA's own map, water, traffic and people, with the Burnout car handling, crashes, wrecks, boost and drifting. Switch any time by installing again.")
+                            .small()
+                            .weak(),
+                    );
+                    ui.add_space(8.0);
+                    let note = match self.map {
+                        steps::Map::Paradise => "The first install converts the whole city: about 15-20 minutes and 10 GB of free disk space. Updates only redo what changed.",
+                        steps::Map::LosSantos => "Only the driving is installed: a few minutes.",
+                    };
+                    ui.label(egui::RichText::new(note).small().weak());
                     ui.add_space(6.0);
                     if ui.add_enabled(ready, egui::Button::new(egui::RichText::new("Install").strong()).min_size(egui::vec2(140.0, 32.0))).clicked() {
                         if steps::gta_running() {

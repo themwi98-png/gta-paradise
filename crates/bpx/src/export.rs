@@ -236,11 +236,6 @@ impl<'a> Exporter<'a> {
         r
     }
 
-    /// The texture id most likely to be a material's diffuse map.
-    fn material_diffuse_id(&self, b: &Bundle, mat_id: u64) -> Option<u64> {
-        self.material_info(b, mat_id).diffuse
-    }
-
     /// A material's shader name and its diffuse / line-layer texture ids,
     /// chosen by texture-slot role (see `bw::material_samplers`). Falls back
     /// to texture-name heuristics only for slots of unknown role, and never
@@ -410,7 +405,8 @@ impl<'a> Exporter<'a> {
             return i;
         }
         let name = b.name_of(mat_id).map(short_name).unwrap_or_else(|| format!("mat_{mat_id:08X}"));
-        let diffuse = self.material_diffuse_id(b, mat_id);
+        let info = self.material_info(b, mat_id);
+        let diffuse = info.diffuse;
         let mut m = json!({"name": name, "pbrMetallicRoughness": {"metallicFactor": 0.0, "roughnessFactor": 0.9}});
         if self.overview {
             if let Some(c) = diffuse.and_then(|id| self.texture_average(id)) {
@@ -423,7 +419,10 @@ impl<'a> Exporter<'a> {
                 g.textures.len() - 1
             });
             m["pbrMetallicRoughness"]["baseColorTexture"] = json!({"index": img});
-            if alpha {
+            // Cut out only where Burnout's shader alpha-tests ("1Bit"), as in
+            // gtavis: road textures keep other data in alpha, and BC1 ones
+            // of opaque materials can have stray punch-through texels.
+            if alpha && info.alpha_tested() {
                 m["alphaMode"] = json!("MASK");
                 m["alphaCutoff"] = json!(0.5);
             }

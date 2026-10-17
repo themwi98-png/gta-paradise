@@ -1,4 +1,5 @@
-//! Hand edits made in tools/viewer, applied whenever the GTA data is built.
+//! Hand edits made in the map viewer (the paradise-viewer project), applied
+//! whenever the GTA data is built.
 //!
 //! Collision: the viewer's collision editor exports deleted polygons as
 //! `{"format": "paradise-collision-deletions-v1", "edits": [{"source":

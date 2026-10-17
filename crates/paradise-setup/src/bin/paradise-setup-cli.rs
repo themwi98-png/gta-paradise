@@ -6,6 +6,9 @@
 //!   paradise-setup-cli --rebuild           ignore what's up to date
 //!   paradise-setup-cli --yes               don't ask before installing
 //!   paradise-setup-cli --dev               run from the project folder
+//!   paradise-setup-cli --map los_santos    GTA's own Los Santos with only the
+//!                                          Burnout driving (--map paradise:
+//!                                          Paradise City; default: as now)
 
 use anyhow::{bail, Context, Result};
 use paradise_setup::{find, steps, Games, Layout};
@@ -20,10 +23,11 @@ struct Args {
     rebuild: bool,
     yes: bool,
     dev: bool,
+    map: Option<steps::Map>,
 }
 
 fn parse_args() -> Result<Args> {
-    let mut a = Args { gta: None, burnout: None, codewalker: None, only: None, rebuild: false, yes: false, dev: false };
+    let mut a = Args { gta: None, burnout: None, codewalker: None, only: None, rebuild: false, yes: false, dev: false, map: None };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = || it.next().with_context(|| format!("{arg} needs a value"));
@@ -35,8 +39,15 @@ fn parse_args() -> Result<Args> {
             "--rebuild" => a.rebuild = true,
             "--yes" | "-y" => a.yes = true,
             "--dev" => a.dev = true,
+            "--map" => {
+                a.map = Some(match value()?.to_ascii_lowercase().as_str() {
+                    "paradise" => steps::Map::Paradise,
+                    "los_santos" | "los-santos" | "ls" | "lossantos" => steps::Map::LosSantos,
+                    m => bail!("--map {m}: paradise or los_santos"),
+                })
+            }
             "-h" | "--help" => {
-                println!("{}", include_str!("paradise-setup-cli.rs").lines().skip(2).take(6).map(|l| l.trim_start_matches("//!")).collect::<Vec<_>>().join("\n"));
+                println!("{}", include_str!("paradise-setup-cli.rs").lines().skip(2).take(9).map(|l| l.trim_start_matches("//!")).collect::<Vec<_>>().join("\n"));
                 std::process::exit(0);
             }
             _ => bail!("unknown option {arg} (try --help)"),
@@ -61,7 +72,7 @@ fn run() -> Result<()> {
     println!("GTA V (Legacy):              {}", games.gta.display());
     println!("Burnout Paradise Remastered: {}", games.burnout.display());
     println!("CodeWalker:                  {}\n", games.codewalker.display());
-    paradise_setup::remember(&games)?;
+    paradise_setup::remember(&games, &layout)?;
     layout.prepare()?;
 
     if !args.yes {
@@ -82,8 +93,9 @@ fn run() -> Result<()> {
         steps::State::UpToDate => println!("[{:>2}/{total}] {title:<44}up to date", i + 1),
         steps::State::Done(s) => println!("done ({}:{:02})", s / 60, s % 60),
         steps::State::Failed => println!("failed"),
+        steps::State::NotNeeded => println!("[{:>2}/{total}] {title:<44}not needed (Los Santos)", i + 1),
     };
-    if let Err(e) = steps::run_all(&layout, &games, args.only.as_deref(), args.rebuild, &report) {
+    if let Err(e) = steps::run_all(&layout, &games, args.only.as_deref(), args.rebuild, args.map, &report) {
         eprintln!("\nLast lines of {}:", steps::log_path(&layout).display());
         for l in steps::log_tail(&layout, 15) {
             eprintln!("  {l}");
