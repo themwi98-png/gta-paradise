@@ -76,7 +76,7 @@ copies of both games, and are never uploaded here.
 3. The setup finds your games and CodeWalker, or lets you pick their folders.
    Press **Install**: the first install converts the whole city (about
    10–20 minutes, 10 GB free disk space). Updates only redo what changed.
-4. Add -nobattleye to GTA V's launch options in steam.
+4. Add "-scofflineonly -nobattleye" to GTA V's launch options in steam.
 5. Start GTA V and load story mode.
 
 ## Settings
