@@ -47,6 +47,8 @@ fn prop_name(path: &str) -> String {
     file.split(['.', '?']).next().unwrap_or(file).to_string()
 }
 
+/// A unit's props. Prop models are named from the bundles' debug names
+/// (bnd2's fallback names cover bundles a modded map ships without them).
 pub fn read_unit(game: &Path, unit: u32) -> Result<Vec<Prop>> {
     let b = Bundle::open(game.join(format!("TRK_UNIT{unit}_GR.BNDL")))?;
     let mut names: HashMap<u32, (String, Option<u64>)> = HashMap::new();
@@ -308,8 +310,8 @@ impl Floors {
     pub(crate) fn load(col: &Path, placement: &Placement) -> Result<Self> {
         let edits = crate::edits::CollisionEdits::load()?;
         let mut cells: HashMap<(i32, i32), Vec<[[f32; 3]; 3]>> = HashMap::new();
-        for (unit, polys) in crate::colsrc::load(col)? {
-            for p in edits.polys(unit, polys) {
+        for (unit, polys, ids) in crate::colsrc::load(col)? {
+            for p in edits.polys(unit, polys, &ids) {
                 if bpworld::CollisionTag::decode(p.tag).surface_id == bpworld::SURFACE_INVISIBLE_WALL {
                     continue;
                 }

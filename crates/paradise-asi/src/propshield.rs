@@ -23,6 +23,9 @@
 //! it for GHOST_MS while it's thrown clear, so it can't drag along with the
 //! car. (Not while another vehicle is touching: that's a crash.)
 //!
+//! The gameplay camera ignores props the car has just hit or thrown, so it
+//! doesn't pull in close as they pass through and past the car.
+//!
 //! Every frame, loose objects (thrown props and broken pieces) in the space
 //! just ahead of the moving car's nose, along the way it's moving, are swept
 //! aside, away from its line (ones dead ahead go up and over), so nothing
@@ -66,6 +69,8 @@ pub struct PropShield {
     ghost: HashMap<i32, i32>,
     /// Props touching the car last frame.
     touching: std::collections::HashSet<i32>,
+    /// When the car last hit a prop (game ms).
+    last_hit: i32,
     /// The car, its velocity, spin and orientation last frame.
     last: Option<(i32, Vec3, [f32; 3], crate::air::Frame)>,
 }
@@ -175,6 +180,11 @@ impl PropShield {
     }
 
     /// Is the car protected from damage right now?
+    /// When the car last hit a prop (game ms; 0: never).
+    pub fn last_hit(&self) -> i32 {
+        self.last_hit
+    }
+
     pub fn shielding(&self) -> bool {
         self.shielded != 0
     }
@@ -215,6 +225,9 @@ impl PropShield {
     pub fn sweep(&mut self, veh: i32, now: i32) {
         self.thrown.retain(|_, t| now - *t < 600);
         self.ghost.retain(|_, t| *t > now);
+        for &o in self.ghost.keys().chain(self.thrown.keys()) {
+            n::camera_ignore(o);
+        }
         self.loose.clear();
         if veh == 0 {
             self.last = None;
@@ -261,6 +274,7 @@ impl PropShield {
                 touching.insert(o);
                 if !self.touching.contains(&o) {
                     struck = true;
+                    self.last_hit = now;
                     if !self.loose_props.contains(&o) {
                         // A standing prop hit: knocked over, through the car,
                         // thrown clear along the way the car was going.
@@ -318,6 +332,7 @@ impl PropShield {
     /// A prop the car just knocked over (it stood fixed until hit, so the
     /// sweep couldn't move it): thrown clear the same way.
     pub fn toss(&mut self, veh: i32, props: &[([f32; 3], u32)], v: Vec3, now: i32) {
+        self.last_hit = now;
         let p = n::get_entity_coords(veh);
         let (fx, fy) = {
             let l = v.x.hypot(v.y).max(1e-3);

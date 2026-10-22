@@ -24,9 +24,18 @@ traffic, pedestrians and police live in it, with Burnout-style driving on top.
   slow you down or knock you off line.
 - **Traffic** that's busy downtown and quiet on country roads, following
   Burnout's own traffic data.
-- **Police** that can follow you around Paradise City.
-- **A map viewer and editor** for hand-fixing collision, water, traffic lanes,
-  sidewalks and spawn spots.
+- **Takedowns:** ram police (or any car) into a crash, Burnout style. Police
+  ram back, and five takedowns in one chase lose them.
+- **Police** that follow you around Paradise City, keep up at speed and know
+  where you are while they're close.
+- **Burnout's drive-thrus:** auto repairs, gas stations (fill the boost),
+  paint shops, and junkyards with a menu to customise your car or swap it
+  for any GTA road vehicle.
+- **Radar, pause map and GPS** showing Paradise City, and Burnout's traffic
+  lights cycling at its junctions.
+- **Grinding** along walls and cars at speed, with sparks.
+- **Distant mountains and low-detail city**, so the skyline shows from afar.
+- **Builds from Burnout with the OTN mod** installed as well as from stock.
 
 The full list, with what's confirmed working, is in
 [docs/FEATURES.md](docs/FEATURES.md); what changed in each release is in
@@ -36,19 +45,13 @@ The full list, with what's confirmed working, is in
 
 - **Some tunnels are blocked or flooded.** Glitched collision blocks the way
   through some tunnels, and one tunnel is flooded with water.
-- **The minimap and GPS still show Los Santos.** The pause-menu map, minimap
-  and route guidance haven't been replaced yet.
-- **Burnout's low-detail backdrop hills are missing**, so the distant
-  scenery around the edge of the city isn't there.
-- **Low-detail (LOD) models are missing.** Buildings and scenery only have
-  their full-detail models, so far-away parts of the city don't show until
-  you get closer.
-- **Police sometimes bug out while following you**, likely because of the
-  mod's higher car speeds and weaker cars, which GTA's police driving
-  wasn't made for.
+- **District names on the map are still Los Santos's**, and some Los Santos
+  map blips can remain.
+- **Police can still get tripped up at junctions** at Paradise speeds,
+  though they catch up again.
 - **Out-of-bounds collision is rough.** Expect some glitches off the main
   roads (see the first feature above).
-- **Various visual glitches** Power lines are white for some reason, some road textures don't render properly
+- **Various visual glitches:** some textures still don't render properly.
 
 ## No game files included
 
@@ -74,7 +77,8 @@ copies of both games, and are never uploaded here.
    (Windows may warn that the app isn't signed: click **More info**, then
    **Run anyway**.)
 3. The setup finds your games and CodeWalker, or lets you pick their folders.
-   Press **Install**: the first install converts the whole city (about
+   Pick the map (Paradise City, or GTA's own Los Santos with only the Burnout
+   driving) and press **Install**: the first install converts the whole city (about
    10–20 minutes, 10 GB free disk space). Updates only redo what changed.
 4. Add "-scofflineonly -nobattleye" to GTA V's launch options in steam.
 5. Start GTA V and load story mode.
@@ -88,8 +92,8 @@ to `GTA5.exe`):
 2. Change a number, or `on` / `off`, after a setting's name. Lines starting
    with `#` are notes explaining each setting.
 3. Save. **No restart needed:** the game picks up changes within a few
-   seconds, so you can tweak while playing. The exceptions are `@car_grip`
-   and `@car_brakes`, which are built into the car data: run
+   seconds, so you can tweak while playing. The exceptions are `@car_grip`,
+   `@car_brakes` and `@tyres_clip`, which are built into the car data: run
    `paradise-setup.exe` again after changing them.
 
 Updating the mod keeps the values you've changed; settings you never touched
@@ -120,9 +124,19 @@ The ones you're most likely to want:
 | `@car_grip` | 1.2 | Grip, times GTA's (re-run the setup after changing) |
 | `@car_brakes` | 2.5 | Braking power, times GTA's (re-run the setup after changing) |
 | `@traffic` | 1 | Amount of traffic (0 = empty roads, up to 3) |
+| `@junctions` | on | Traffic obeys Burnout's traffic lights and gives way at junctions |
 | `@police_power` | 1 | Engine power of police cars chasing you, times GTA's |
+| `@police_ram` | 12 | How much faster than you police cars ram you (0 = they don't) |
+| `@police_sight` | 400 | Police within this many metres know where you are |
+| `@takedowns` | on | Ram police cars into a crash to take them down |
+| `@takedown_any` | on | Any vehicle can be taken down, not only police |
+| `@chase_takedowns` | 5 | Police takedowns in one chase that end it (0 = never) |
+| `@grind` | on | Scraping along walls and cars barely slows or damages you, with sparks |
+| `@shops` | on | Burnout's drive-thrus: repairs, gas, paint shops and junkyards |
+| `@gta_missions` | off | `on` keeps GTA's missions, side activities and their blips |
+| `@tyres_clip` | on | Tyres sink into kerbs instead of lifting the car (re-run the setup after changing) |
 | `@start_car` | drifttampa | The car you start in (any GTA vehicle model; `none` = on foot) |
-| `@mode` | paradise | `off` gives you normal GTA V back without uninstalling |
+| `@mode` | paradise | Which map is installed (set by the setup's map choice: Paradise City or Los Santos) |
 
 Every setting is described in the file itself and in
 [docs/FEATURES.md](docs/FEATURES.md#settings-paradiseini-in-the-gta-folder).
@@ -134,12 +148,11 @@ Every setting is described in the file itself and in
 
 | Folder | What it is |
 |---|---|
-| `crates/bpx` | Command-line converter: Burnout data → GTA map, collision, roads, navmesh, water, props |
-| `crates/paradise-asi` | The in-game plugin (ScriptHookV): crashes, boost, police, prop handling, spawn clean-up |
+| `crates/bpx` | Command-line converter: Burnout data → GTA map, distant scenery, collision, roads, navmesh, water, props, radar and map |
+| `crates/paradise-asi` | The in-game plugin (ScriptHookV): crashes, boost, takedowns, police, drive-thrus, traffic lights, GPS, prop handling, spawn clean-up |
 | `crates/bpworld`, `crates/bnd2` | Readers for Burnout Paradise's file formats |
 | `tools/cwconv` | Small C# tool built on CodeWalker for GTA file conversion and packing |
-| `tools/viewer` | Browser-based map viewer and editors |
-| `tools/edits` | Hand edits made in the viewer (collision, water, traffic, spawn zones) |
+| `tools/edits` | Hand edits made in the map editors (collision, water, traffic, sidewalks, spawn zones, map coast, junkyard display lots) |
 | `tools/*.sh` | Build, rebuild and install scripts |
 | `third_party/rerecast` | Navmesh library (MIT / Apache-2.0), lightly patched |
 | `crates/paradise-setup` | The installer (setup window and console version) |

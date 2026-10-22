@@ -32,12 +32,20 @@
 //! (below) never move a wheel; only the crash itself does. The player's
 //! tyres can't burst at all (`@strong_tyres`).
 //!
+//! Ramming a police car (a shunt, slam, T-bone or landing on it; see
+//! takedown.rs) is never a wreck either: as in Burnout the attacker is
+//! favoured, so the car keeps `@takedown_keep` of its speed and all its
+//! health. A wreck soon after a police car rammed the player is TAKEN DOWN
+//! instead of WRECKED. With a police car near, the driver is never thrown
+//! through the windscreen.
+//!
 //! Knocking over a prop (lamp post, bin, sign...) is not a crash: the car
 //! keeps `@prop_keep` of its speed and the hit costs it no health (the prop
 //! shield, propshield.rs, already stops it denting the car).
 //!
 //! Once the screen has faded after a wreck, NPCs and vehicles within
-//! CLEAR_RADIUS of the wreck are removed, so the respawn starts clean.
+//! CLEAR_RADIUS of the wreck are removed, so the respawn starts clean; a
+//! police car that took the player down (and its crew) stays.
 //!
 //! The player is kept invincible through a wreck, so GTA's own death and
 //! hospital respawn never happen for one; the wreck is the death. With
@@ -81,6 +89,10 @@ pub struct WreckSettings {
     pub stuck_time: f32,
     /// Fraction of its speed a car keeps when it knocks over a prop.
     pub prop_keep: f32,
+    /// After a prop hit, the car can't be spun: for PROP_HOLD_MS it keeps
+    /// the turn rate it had (straight stays straight, a drift keeps
+    /// turning as it was).
+    pub prop_straight: bool,
     /// Start the slow-motion crash camera just before a predicted wreck.
     pub precrash: bool,
     /// How far ahead (game seconds) a wreck is predicted.
@@ -111,7 +123,7 @@ pub struct WreckSettings {
 
 impl Default for WreckSettings {
     fn default() -> Self {
-        Self { enabled: true, wreck_dv: 25.0, impact_dv: 11.0, explode: true, eject: true, respawn_speed: 12.0, crash_time: 5.0, slowmo: 0.15, crash_cam: true, crush: 8000.0, crush_rounds: 8, damage_wreck: true, stuck_time: 2.5, prop_keep: 1.0, precrash: true, precrash_lead: 0.12, crash_cam_dv: 20.0, crash_cam_hold: 1.5, clear_radius: 6.0, desat: 0.6, wheel_shift: 0.0, strong_tyres: true, engine_wreck: 100.0, strong_axles: true }
+        Self { enabled: true, wreck_dv: 25.0, impact_dv: 11.0, explode: true, eject: true, respawn_speed: 12.0, crash_time: 5.0, slowmo: 0.15, crash_cam: true, crush: 8000.0, crush_rounds: 8, damage_wreck: true, stuck_time: 2.5, prop_keep: 1.0, prop_straight: true, precrash: true, precrash_lead: 0.12, crash_cam_dv: 20.0, crash_cam_hold: 1.5, clear_radius: 6.0, desat: 0.6, wheel_shift: 0.0, strong_tyres: true, engine_wreck: 100.0, strong_axles: true }
     }
 }
 
@@ -216,6 +228,15 @@ const VEHICLE_SHARE: f32 = 0.6;
 const PRE_GRACE: f32 = 0.35;
 /// Steered clear for this long (real s) during the run-up: cancel it.
 const PRE_CLEAR: f32 = 0.4;
+/// How fast steering turns a car held straight while ramming (degrees a
+/// second at full lock).
+const STRAIGHT_STEER: f32 = 70.0;
+/// A car keeps its turn this long (ms) after its last prop hit.
+const PROP_HOLD_MS: i32 = 200;
+/// How hard a car held straight is turned back to its heading (yaw rate
+/// per radian off, 1/s), and the fastest it's turned (rad/s).
+const STRAIGHT_PULL: f32 = 12.0;
+const STRAIGHT_MAX_YAW: f32 = 4.0;
 
 /// The slow-motion run-up to a predicted wreck.
 struct PreCrash {
@@ -248,7 +269,18 @@ pub struct Wreck {
     wheels: Wheels,
     /// When the car was last airborne (game ms).
     last_air: i32,
+    /// The car's heading and turn rate (yaw, rad/s) over the last
+    /// WINDOW_MS, like `history`.
+    headings: VecDeque<(i32, f32, f32)>,
+    /// Held straight while ramming a police car: (heading, travel
+    /// direction x, y) from just before the hit.
+    straight: Option<(f32, f32, f32)>,
+    /// After a prop hit: the turn rate it had just before, kept.
+    prop_spin: Option<f32>,
 }
+
+/// A vehicle moving towards the car faster than this (m/s) is oncoming.
+const ONCOMING: f32 = 5.0;
 
 /// How long (real seconds) "DRIVEAWAY" stays on screen.
 const DRIVEAWAY_TIME: f32 = 2.0;
@@ -262,6 +294,10 @@ pub enum Event {
     Finished(String),
     /// Knocked over a prop; speed and health given back.
     Prop(f32),
+    /// Rammed a police car (takedown.rs); speed and health given back.
+    Attack(f32),
+    /// A hit while grinding (grind.rs): never a crash.
+    Grind(f32),
 }
 
 fn len_h(x: f32, y: f32) -> f32 {
@@ -277,9 +313,62 @@ impl Wreck {
     pub fn reset(&mut self) {
         self.cancel_pre();
         self.history.clear();
+        self.headings.clear();
+        self.straight = None;
+        self.prop_spin = None;
         self.health.clear();
         self.stuck_since = None;
         self.vehicle = 0;
+    }
+
+    /// While ramming: the car keeps the heading and direction of travel it
+    /// had just before the hit (the oldest in the history, before the
+    /// contact turned it): any spin is countered; the player's steering
+    /// still turns both. Its speed is left alone (the ram's slowing down
+    /// stays).
+    fn hold_straight(&mut self, veh: i32, why: &str) {
+        let v = n::get_entity_velocity(veh);
+        let (mut heading, mut dx, mut dy) = *self.straight.get_or_insert_with(|| {
+            let heading = self.headings.front().map_or_else(|| n::get_entity_heading(veh), |h| h.1);
+            let v0 = self.history.front().map_or(v, |h| h.1);
+            let len = len_h(v0.x, v0.y);
+            let (dx, dy) = if len > 1.0 { (v0.x / len, v0.y / len) } else { (-heading.to_radians().sin(), heading.to_radians().cos()) };
+            crate::log(&format!("holding the car straight {why} (heading {heading:.0})"));
+            (heading, dx, dy)
+        });
+        // Steering (left -1 .. right 1) turns the held heading; GTA's
+        // heading goes anticlockwise.
+        let turn = -n::get_control_normal(CONTROL_STEER) * STRAIGHT_STEER * n::get_frame_time();
+        if turn != 0.0 {
+            heading = (heading + turn).rem_euclid(360.0);
+            let (s, c) = turn.to_radians().sin_cos();
+            (dx, dy) = (dx * c - dy * s, dx * s + dy * c);
+            self.straight = Some((heading, dx, dy));
+        }
+        // Turned back towards the held heading by its yaw rate (rad/s,
+        // anticlockwise like the heading), not by setting the heading: that
+        // also levelled the car and reset its suspension every frame, which
+        // sank it onto its rims.
+        let off = (heading - n::get_entity_heading(veh) + 540.0).rem_euclid(360.0) - 180.0;
+        let w = n::get_entity_rotation_velocity(veh);
+        n::set_entity_angular_velocity(veh, w.x, w.y, (off.to_radians() * STRAIGHT_PULL).clamp(-STRAIGHT_MAX_YAW, STRAIGHT_MAX_YAW));
+        let speed = len_h(v.x, v.y);
+        n::set_entity_velocity(veh, dx * speed, dy * speed, v.z);
+    }
+
+    /// Just after a prop hit: the car keeps the turn rate (yaw) it had the
+    /// frame before the hit, so the prop can't spin it, whether it was
+    /// going straight or drifting. Nothing else about its motion is
+    /// touched (holding a heading and a direction of travel, as when
+    /// ramming, set drifting cars straight and jerked them about).
+    fn keep_turn(&mut self, veh: i32, hit_at: i32) {
+        let w = n::get_entity_rotation_velocity(veh);
+        let yaw = *self.prop_spin.get_or_insert_with(|| {
+            let yaw = self.headings.iter().rev().find(|h| h.0 < hit_at).map_or(w.z, |h| h.2);
+            crate::log(&format!("prop hit: keeping the car's turn ({:.0} deg/s)", yaw.to_degrees()));
+            yaw
+        });
+        n::set_entity_angular_velocity(veh, w.x, w.y, yaw);
     }
 
     /// Ends a pre-crash slow motion that no wreck followed.
@@ -293,7 +382,7 @@ impl Wreck {
     /// Is the car all but certain to wreck within the lead time? Traces
     /// straight ahead along its path from the centre and 0.5 m either side;
     /// at least two must find a near head-on hit well over the threshold.
-    fn wreck_ahead(s: &WreckSettings, veh: i32) -> bool {
+    fn wreck_ahead(s: &WreckSettings, veh: i32, rams: (bool, bool)) -> bool {
         let v = n::get_entity_velocity(veh);
         let speed = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
         if speed < s.wreck_dv * PRE_MARGIN || n::get_entity_speed_vector_relative(veh).y <= 0.0 {
@@ -318,6 +407,13 @@ impl Wreck {
             }
             let into = if hit.entity != 0 && n::is_entity_a_vehicle(hit.entity) {
                 let w = n::get_entity_velocity(hit.entity);
+                // A police car (or with `@takedown_any` any vehicle) not
+                // coming at us (going our way, crossing, parked) gets rammed
+                // (takedown.rs).
+                let coming = -(w.x * dir.0 + w.y * dir.1 + w.z * dir.2);
+                if rams.0 && coming < ONCOMING && (rams.1 || crate::takedown::is_police(hit.entity)) {
+                    return false;
+                }
                 ((v.x - w.x) * dir.0 + (v.y - w.y) * dir.1 + (v.z - w.z) * dir.2) * VEHICLE_SHARE
             } else {
                 speed * head_on
@@ -380,11 +476,12 @@ impl Wreck {
     /// Watches the player's car; applies impact damage and runs a wreck,
     /// with the slow-motion crash camera starting just before a predicted
     /// one.
-    pub fn update(&mut self, s: &WreckSettings, ped: i32, now: i32, props: &mut crate::propshield::PropShield) -> Event {
+    pub fn update(&mut self, s: &WreckSettings, ped: i32, now: i32, props: &mut crate::propshield::PropShield, ctx: &crate::takedown::Context) -> Event {
         if self.big_message == 0 {
             self.big_message = n::request_scaleform_movie(BIG_MESSAGE);
         }
-        let event = self.check(s, ped, now, props);
+        let event = self.check(s, ped, now, props, ctx);
+        let rams = (ctx.rams_police, ctx.rams_any);
         if let Some(t) = self.driveaway {
             if t.elapsed().as_secs_f32() < DRIVEAWAY_TIME && !matches!(event, Event::Wrecked { .. } | Event::Finished(_)) {
                 n::draw_text("DRIVEAWAY", 0.37, 0.40, 1.4, [255, 210, 0, 255]);
@@ -411,7 +508,7 @@ impl Wreck {
                 } else if self.pre.is_some() {
                     // Keep the run-up going until the impact; give up if it
                     // doesn't come, or the driver steers clear.
-                    let ahead = Self::wreck_ahead(s, self.vehicle);
+                    let ahead = Self::wreck_ahead(s, self.vehicle, rams);
                     let pre = self.pre.as_mut().unwrap();
                     if ahead {
                         pre.clear_since = None;
@@ -427,11 +524,18 @@ impl Wreck {
                         n::set_time_scale(s.slowmo);
                         pre.cam.update(self.vehicle, t);
                     }
-                } else if s.precrash && Self::wreck_ahead(s, self.vehicle) {
+                } else if s.precrash && Self::wreck_ahead(s, self.vehicle, rams) {
                     let v = n::get_entity_velocity(self.vehicle);
                     n::set_time_scale(s.slowmo);
                     let cam = CrashCam::new(s.crash_cam, self.vehicle, heading_of(v.x, v.y));
                     self.pre = Some(PreCrash { start: std::time::Instant::now(), cam, impact: false, clear_since: None });
+                }
+            }
+            // Ramming a police car or grinding: not a crash, and nothing
+            // to show.
+            Event::Attack(_) | Event::Grind(_) => {
+                if self.pre.as_ref().is_some_and(|p| !p.impact) {
+                    self.cancel_pre();
                 }
             }
             // A prop: never a crash. Ends a wreck run-up that didn't come.
@@ -469,14 +573,18 @@ impl Wreck {
         event
     }
 
-    fn check(&mut self, s: &WreckSettings, ped: i32, now: i32, props: &mut crate::propshield::PropShield) -> Event {
+    fn check(&mut self, s: &WreckSettings, ped: i32, now: i32, props: &mut crate::propshield::PropShield, ctx: &crate::takedown::Context) -> Event {
         if !s.enabled {
             return Event::None;
         }
+        // Taken down by a police car (which the clear-up spares), or a
+        // wreck of the player's own.
+        let word = ctx.taken_down.unwrap_or("WRECKED");
+        let spare = ctx.taken_by;
         if !n::is_ped_in_any_vehicle(ped) {
             // Thrown out through the windscreen (GTA's own, `@wreck_eject`):
             // always a wreck.
-            if let Some(event) = self.thrown_out(s, ped) {
+            if let Some(event) = self.thrown_out(s, ped, word, spare) {
                 self.reset();
                 return event;
             }
@@ -490,8 +598,9 @@ impl Wreck {
             return Event::None;
         }
         // Burnout drivers stay in the car, except that GTA's windscreen
-        // ejection (`@wreck_eject`) is on in the run-up to a certain wreck.
-        let certain_wreck = self.pre.as_ref().is_some_and(|p| !p.impact);
+        // ejection (`@wreck_eject`) is on in the run-up to a certain wreck;
+        // never near police (takedowns, police ramming).
+        let certain_wreck = self.pre.as_ref().is_some_and(|p| !p.impact) && !ctx.police_near;
         n::set_ped_config_flag(ped, 32, s.eject && certain_wreck);
         if veh != self.vehicle {
             self.reset();
@@ -500,6 +609,27 @@ impl Wreck {
         self.wheels.watch(veh);
         n::set_vehicle_has_strong_axles(veh, s.strong_axles);
         n::set_vehicle_tyres_can_burst(veh, !s.strong_tyres);
+        // Ramming a police car costs no health (takedown.rs), and with
+        // `@takedown_straight` can't spin the car either.
+        if ctx.attacking {
+            if let Some(&(_, engine, body)) = self.health.back() {
+                give_back_health(veh, engine, body);
+            }
+        }
+        let prop_hit = props.last_hit() != 0 && now - props.last_hit() < PROP_HOLD_MS;
+        if ctx.attacking && ctx.straight {
+            self.prop_spin = None;
+            self.hold_straight(veh, "ramming");
+        } else {
+            if self.straight.take().is_some() {
+                crate::log("car let go (it was held straight)");
+            }
+            if prop_hit && s.prop_straight {
+                self.keep_turn(veh, props.last_hit());
+            } else if self.prop_spin.take().is_some() {
+                crate::log("prop hit: car's turn let go");
+            }
+        }
         // Damage wrecks only count while the prop shield isn't holding the
         // car's health (props must never wreck it).
         if props.shielding() {
@@ -508,7 +638,7 @@ impl Wreck {
             let f = n::get_entity_forward_vector(veh);
             let v = n::get_entity_velocity(veh);
             let pre = self.pre.take();
-            self.run_wreck(s, ped, veh, (0.0, 1.0), heading_of(f.x, f.y), len_h(v.x, v.y), pre);
+            self.run_wreck(s, ped, veh, (word, spare), (0.0, 1.0), heading_of(f.x, f.y), len_h(v.x, v.y), pre);
             self.reset();
             return Event::Finished(why);
         }
@@ -519,6 +649,10 @@ impl Wreck {
         self.history.push_back((now, v));
         while self.history.len() > 2 && now - self.history[1].0 >= WINDOW_MS {
             self.history.pop_front();
+        }
+        self.headings.push_back((now, n::get_entity_heading(veh), n::get_entity_rotation_velocity(veh).z));
+        while self.headings.len() > 2 && now - self.headings[1].0 >= WINDOW_MS {
+            self.headings.pop_front();
         }
         self.health.push_back((now, n::get_vehicle_engine_health(veh), n::get_vehicle_body_health(veh)));
         while self.health.len() > 2 && now - self.health[1].0 >= WINDOW_MS {
@@ -548,14 +682,30 @@ impl Wreck {
             }
             // Give back any health it cost.
             let (_, engine, body) = self.health[0];
-            if n::get_vehicle_engine_health(veh) < engine {
-                n::set_vehicle_engine_health(veh, engine);
-            }
-            if n::get_vehicle_body_health(veh) < body {
-                n::set_vehicle_body_health(veh, body);
-            }
+            give_back_health(veh, engine, body);
             self.history.clear();
             return Event::Prop(dv);
+        }
+        // Ramming a police car (takedown.rs): as in Burnout the attacker is
+        // favoured. Never a wreck; most of the speed it cost comes back.
+        if ctx.attacking {
+            self.last_impact = now;
+            let (kx, ky) = (v0.x * ctx.keep, v0.y * ctx.keep);
+            if len_h(kx, ky) > len_h(v.x, v.y) {
+                n::set_entity_velocity(veh, kx, ky, v.z);
+            }
+            self.history.clear();
+            return Event::Attack(dv);
+        }
+        // Grinding along a wall or a car: never a crash (grind.rs keeps the
+        // speed and most of the health).
+        if ctx.grinding {
+            if dv >= s.impact_dv {
+                self.last_impact = now;
+                self.history.clear();
+                return Event::Grind(dv);
+            }
+            return Event::None;
         }
         if dv < s.impact_dv.min(if s.crash_cam { s.crash_cam_dv } else { f32::MAX }) {
             return Event::None;
@@ -591,7 +741,7 @@ impl Wreck {
             ));
             let travel = heading_of(v0.x, v0.y);
             let pre = self.pre.take();
-            self.run_wreck(s, ped, veh, local, travel, len_h(v0.x, v0.y), pre);
+            self.run_wreck(s, ped, veh, (word, spare), local, travel, len_h(v0.x, v0.y), pre);
             self.reset();
             return Event::Wrecked { dv };
         }
@@ -601,7 +751,7 @@ impl Wreck {
     /// The driver was just thrown out of the car by a crash (out of it,
     /// ragdolling, the car fast a moment ago and its speed changed sharply):
     /// runs the wreck.
-    fn thrown_out(&mut self, s: &WreckSettings, ped: i32) -> Option<Event> {
+    fn thrown_out(&mut self, s: &WreckSettings, ped: i32, word: &'static str, spare: i32) -> Option<Event> {
         let veh = self.vehicle;
         if !s.eject || veh == 0 || !n::does_entity_exist(veh) || !n::is_ped_ragdoll(ped) {
             return None;
@@ -619,11 +769,15 @@ impl Wreck {
         let local = (hx * f.y - hy * f.x, hx * f.x + hy * f.y);
         crate::log(&format!("wreck: driver thrown through the windscreen at {:.0} km/h", len_h(v0.x, v0.y) * 3.6));
         let pre = self.pre.take();
-        self.run_wreck(s, ped, veh, local, heading_of(v0.x, v0.y), len_h(v0.x, v0.y), pre);
+        self.run_wreck(s, ped, veh, (word, spare), local, heading_of(v0.x, v0.y), len_h(v0.x, v0.y), pre);
         Some(Event::Wrecked { dv })
     }
 
-    fn run_wreck(&mut self, s: &WreckSettings, ped: i32, veh: i32, local: (f32, f32), travel: f32, speed: f32, pre: Option<PreCrash>) {
+    /// `blame`: WRECKED, or TAKEN DOWN by a police car, and that car (spared
+    /// by the clear-up; 0: none).
+    #[allow(clippy::too_many_arguments)]
+    fn run_wreck(&mut self, s: &WreckSettings, ped: i32, veh: i32, blame: (&'static str, i32), local: (f32, f32), travel: f32, speed: f32, pre: Option<PreCrash>) {
+        let (word, spare) = blame;
         let player = n::player_id();
         let model = n::get_entity_model(veh);
         // The prop shield may have the car protected; a wreck must show.
@@ -663,10 +817,10 @@ impl Wreck {
         // The vehicles and people in the crash, followed wherever they're
         // thrown so they can be removed with the wreck: everything close at
         // the impact, and anything the wreck touches as it tumbles.
-        let mut involved = Involved::default();
+        let mut involved = Involved { spare, ..Default::default() };
         involved.near(ped, veh, crash_pos, INVOLVED_RADIUS);
         // The camera of the slow-motion run-up carries on, if there was one.
-        let mut banner = Banner::new("WRECKED", self.big_message, s.desat);
+        let mut banner = Banner::new(word, self.big_message, s.desat);
         let (mut cam, cam_start) = match pre {
             Some(p) => (p.cam, p.start),
             None => (CrashCam::new(s.crash_cam, veh, travel), std::time::Instant::now()),
@@ -713,7 +867,7 @@ impl Wreck {
         banner.finish();
         // Where it hit and where it ended up (it may have tumbled a way).
         let wreck_pos = n::get_entity_coords(veh);
-        let cleared = if s.clear_radius > 0.0 { involved.remove() } else { 0 } + clear_around(ped, &[veh], &[crash_pos, wreck_pos], s.clear_radius);
+        let cleared = if s.clear_radius > 0.0 { involved.remove() } else { 0 } + clear_around(ped, &[veh], spare, &[crash_pos, wreck_pos], s.clear_radius);
 
         // Back on the nearest road, facing the way the player was going.
         let (spot, heading) = match n::closest_vehicle_node(crash_pos) {
@@ -762,7 +916,7 @@ impl Wreck {
         }
         // Again just before the screen comes back: traffic and people can be
         // spawned in while it is black, and the new car may be next to them.
-        let again = clear_around(ped, &[fresh], &[crash_pos, wreck_pos, spot], s.clear_radius);
+        let again = clear_around(ped, &[fresh], spare, &[crash_pos, wreck_pos, spot], s.clear_radius);
         crate::log(&format!("wreck clear-up: {} + {again} NPCs/vehicles removed", cleared));
         n::do_screen_fade_in(500);
         if fresh != 0 && s.respawn_speed > 0.0 {
@@ -843,17 +997,20 @@ const INVOLVED_RADIUS: f32 = 10.0;
 struct Involved {
     vehicles: Vec<i32>,
     peds: Vec<i32>,
+    /// A vehicle never counted (the police car that took the player down),
+    /// nor anyone in it.
+    spare: i32,
 }
 
 impl Involved {
     fn add_vehicle(&mut self, v: i32) {
-        if !self.vehicles.contains(&v) {
+        if v != self.spare && !self.vehicles.contains(&v) {
             self.vehicles.push(v);
         }
     }
 
     fn add_ped(&mut self, p: i32) {
-        if !self.peds.contains(&p) {
+        if !in_vehicle(p, self.spare) && !self.peds.contains(&p) {
             self.peds.push(p);
         }
     }
@@ -922,22 +1079,28 @@ impl Involved {
     }
 }
 
+/// Whether `p` is in vehicle `v` (0: never).
+fn in_vehicle(p: i32, v: i32) -> bool {
+    v != 0 && n::is_ped_in_any_vehicle(p) && n::get_vehicle_ped_is_in(p) == v
+}
+
 /// Removes the NPCs and vehicles within `radius` of any of `spots` (except
-/// the player and the vehicles in `keep`), and puts out fires there.
-/// Returns how many were removed.
-fn clear_around(ped: i32, keep: &[i32], spots: &[Vec3], radius: f32) -> usize {
+/// the player, the vehicles in `keep`, and `spare` with anyone in it), and
+/// puts out fires there. Returns how many were removed.
+fn clear_around(ped: i32, keep: &[i32], spare: i32, spots: &[Vec3], radius: f32) -> usize {
     if radius <= 0.0 {
         return 0;
     }
+    let spare = if spare != 0 && n::does_entity_exist(spare) { spare } else { 0 };
     let near = |e: i32| {
         let q = n::get_entity_coords(e);
         spots.iter().any(|at| (q.x - at.x).powi(2) + (q.y - at.y).powi(2) + (q.z - at.z).powi(2) <= radius * radius)
     };
-    let vehicles: Vec<i32> = shv::all_vehicles().into_iter().filter(|&v| !keep.contains(&v) && near(v)).collect();
+    let vehicles: Vec<i32> = shv::all_vehicles().into_iter().filter(|&v| v != spare && !keep.contains(&v) && near(v)).collect();
     let mut removed = 0;
     // Peds first (including anyone in those vehicles), then the vehicles.
     for p in shv::all_peds() {
-        if p == ped || n::is_ped_a_player(p) || !n::does_entity_exist(p) {
+        if p == ped || n::is_ped_a_player(p) || !n::does_entity_exist(p) || in_vehicle(p, spare) {
             continue;
         }
         let in_cleared = n::is_ped_in_any_vehicle(p) && vehicles.contains(&n::get_vehicle_ped_is_in(p));
@@ -953,10 +1116,14 @@ fn clear_around(ped: i32, keep: &[i32], spots: &[Vec3], radius: f32) -> usize {
         }
     }
     // The game's own sweep catches anything the lists missed (it leaves the
-    // player and the car they're in alone), and the explosion's fires go.
+    // player and the car they're in alone, but would take the spared police
+    // car: not near it), and the explosion's fires go.
+    let s = if spare != 0 { n::get_entity_coords(spare) } else { Vec3::default() };
     for &at in spots {
-        n::clear_area_of_peds(at, radius);
-        n::clear_area_of_vehicles(at, radius);
+        if spare == 0 || (s.x - at.x).powi(2) + (s.y - at.y).powi(2) + (s.z - at.z).powi(2) > (radius + 5.0).powi(2) {
+            n::clear_area_of_peds(at, radius);
+            n::clear_area_of_vehicles(at, radius);
+        }
         n::stop_fire_in_range(at, radius);
     }
     removed
@@ -1076,6 +1243,16 @@ fn dent(veh: i32, local: (f32, f32), damage: f32, hits: i32) {
         n::set_vehicle_damage(veh, px, py, 0.1 + (k % 2) as f32 * 0.3, damage, 1.2);
     }
     n::set_vehicle_can_deform_wheels(veh, true);
+}
+
+/// Puts engine and body health back up to what they were.
+fn give_back_health(veh: i32, engine: f32, body: f32) {
+    if n::get_vehicle_engine_health(veh) < engine {
+        n::set_vehicle_engine_health(veh, engine);
+    }
+    if n::get_vehicle_body_health(veh) < body {
+        n::set_vehicle_body_health(veh, body);
+    }
 }
 
 /// Breaks glass and the panel nearest the struck side.

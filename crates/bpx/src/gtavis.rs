@@ -9,7 +9,16 @@
 //!   every placed model instance baked in (LOD0), in GTA coordinates relative
 //!   to the unit's centre;
 //! - one map types file (`.ytyp`) with an archetype per drawable;
-//! - one map data file (`.ymap`) per unit placing its drawables.
+//! - one map data file (`.ymap`) per unit placing its drawables;
+//! - Burnout's backdrops (GLOBALBACKDROPS.BNDL), placed by the entries past
+//!   the end of each unit's instance list: the low-detail stand-in for each
+//!   unit (`BdZone<n>`, Burnout's own LOD of unit n) becomes the GTA LOD
+//!   parent of that unit's drawables, the mountains and other scenery that
+//!   Burnout draws even from the units next to them are always drawn, and a
+//!   big stand-in such as the whole of Big Surf Island becomes the parent of
+//!   the units it covers that have no stand-in of their own (see
+//!   `export_backdrops`). They share one texture dictionary of cut-down
+//!   textures and live in one LOD map file.
 //!
 //! Burnout materials map onto GTA's diffuse-only shaders, with parameters and
 //! vertex layout copied from Rockstar's own drawables:
@@ -37,6 +46,8 @@ const MAX_GEOM_VERTS: usize = 60000;
 const WHITE_TEXTURE: &str = "bp_white";
 /// Translucent tint for Burnout glass, which has only a reflection map.
 const GLASS_TEXTURE: &str = "bp_glass";
+/// Overhead cables (telephone, power, tram) have no texture: solid black.
+const BLACK_TEXTURE: &str = "bp_black";
 /// Overlays are lifted off their base surface to avoid z-fighting.
 const DECAL_LIFT: f32 = 0.01;
 
@@ -49,8 +60,12 @@ const COMMON_MIN_UNITS: usize = 24;
 
 pub struct Options {
     pub placement: Placement,
-    /// Distance at which each unit's model is drawn (no LOD chain yet).
+    /// Distance at which each unit's full-detail model is drawn (beyond it,
+    /// the unit's stand-in, if it has one).
     pub lod_dist: f32,
+    /// Backdrops: stand-ins and scenery (off: none), drawn out to this far.
+    pub lods: bool,
+    pub lod_far: f32,
     /// Prefix for asset names; GTA names must be globally unique.
     pub prefix: String,
 }
@@ -82,19 +97,66 @@ struct UnitModel {
     bb_min: [f32; 3],
     bb_max: [f32; 3],
     triangles: usize,
+    lod_dist: f32,
+}
+
+/// Stand-in textures are cut down to this size (px).
+const LOD_TEXTURE_MAX: u32 = 256;
+/// A backdrop piece counts as scenery when this many of the 6 units nearest
+/// it still draw it (Burnout hides a stand-in from the units it stands in for).
+const SCENERY_LISTED: usize = 5;
+/// A big stand-in becomes the parent of a unit without its own when it covers
+/// this share of the unit's footprint.
+const STAND_IN_COVER: f32 = 0.3;
+/// Stand-ins are drawn out to this far (scenery: Options::lod_far).
+const STAND_IN_DIST: f32 = 8000.0;
+
+/// A backdrop piece as Burnout places it: an entry past the end of a unit's
+/// instance list (its model in GLOBALBACKDROPS.BNDL), drawn while the camera
+/// is in one of the units listing it. Zone n >= 0: the stand-in for unit n.
+struct BackdropInst {
+    model: u64,
+    zone: i16,
+    transform: [f32; 16],
+    listed_by: Vec<u32>,
+}
+
+/// A backdrop drawable placed in the LOD map, and the units whose drawables
+/// it stands in for (none: always drawn).
+struct LodModel {
+    model: UnitModel,
+    children: Vec<u32>,
 }
 
 /// Material id -> (base shader, optional line-layer shader, double sided).
 /// Material ids are hashes of resource names, so they are global.
-type MaterialCache = HashMap<u64, (ShaderKey, Option<ShaderKey>, bool)>;
+type MaterialCache = HashMap<u64, (ShaderKey, Option<ShaderKey>, bool, bool)>;
 
-fn material_keys(cache: &mut MaterialCache, ex: &mut Exporter, b: &Bundle, mat: u64, out: &Path) -> (ShaderKey, Option<ShaderKey>, bool) {
+/// Materials whose Burnout shader has no name anywhere (then alpha testing,
+/// overlays and double-sidedness can't be told).
+static UNKNOWN_SHADERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Models placed in a unit that gave no geometry (not in the unit's bundle,
+/// or not decodable).
+static NO_GEOMETRY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// (base shader, line-layer shader, double sided, line layer on the second UV set).
+fn material_keys(cache: &mut MaterialCache, ex: &mut Exporter, b: &Bundle, mat: u64, out: &Path) -> (ShaderKey, Option<ShaderKey>, bool, bool) {
     cache
         .entry(mat)
         .or_insert_with(|| {
             let info = ex.material_info(b, mat);
+            if info.shader.is_empty() {
+                UNKNOWN_SHADERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if std::env::var_os("BPX_DEBUG_SHADERS").is_some() {
+                    let r = b.find(mat).and_then(|e| bpworld::Res::load(b, e).ok());
+                    eprintln!("unknown shader: material {mat:x} shader {:x?} in this bundle {}", r.as_ref().and_then(bpworld::material_shader), r.as_ref().and_then(bpworld::material_shader).is_some_and(|id| b.find(id).is_some()));
+                }
+            }
+            if info.diffuse.is_none() && std::env::var_os("BPX_DEBUG_WHITE").is_some() {
+                eprintln!("white: material {mat:x} {} shader {}", b.name_of(mat).map(crate::export::short_name).unwrap_or_default(), info.shader);
+            }
             let (base, line) = shaders_for(ex, &info, out);
-            (base, line, info.double_sided())
+            (base, line, info.double_sided(), !info.lightmapped)
         })
         .clone()
 }
@@ -201,9 +263,17 @@ pub fn export_visual(game: &Path, out_assets: &Path, out_meta: &Path, units: &[u
         .map(|g| format!("{:.0}", g.iter().map(|t| texture_bytes(out_assets, t)).sum::<u64>() as f64 / 1048576.0))
         .collect();
     println!("{} texture groups (MB: {})", groups.len(), group_mb.join(" "));
+    let unknown = UNKNOWN_SHADERS.load(std::sync::atomic::Ordering::Relaxed);
+    if unknown > 0 {
+        println!("{unknown} materials with an unknown Burnout shader (drawn as plain opaque)");
+    }
+    let empty = NO_GEOMETRY.load(std::sync::atomic::Ordering::Relaxed);
+    if empty > 0 {
+        println!("{empty} placed models gave no geometry (left out)");
+    }
 
     // Pass 2: geometry, one drawable per (unit, texture group).
-    let mut models = Vec::new();
+    let mut by_unit: std::collections::BTreeMap<u32, Vec<UnitModel>> = std::collections::BTreeMap::new();
     for &unit in units {
         let unit_models = export_unit(game, out_assets, &mut ex, &mut cache, &group_of, unit, opts)?;
         if unit_models.is_empty() {
@@ -212,11 +282,432 @@ pub fn export_visual(game: &Path, out_assets: &Path, out_meta: &Path, units: &[u
         }
         let tris: usize = unit_models.iter().map(|m| m.triangles).sum();
         println!("unit {unit}: {tris} triangles in {} drawables", unit_models.len());
-        write_ymap(out_meta, unit, &unit_models, opts)?;
+        by_unit.insert(unit, unit_models);
+    }
+
+    // Backdrops: stand-ins (LOD parents of units) and scenery, in one LOD map.
+    let lods = if opts.lods { export_backdrops(game, out_assets, &mut ex, &by_unit, opts)? } else { Vec::new() };
+    let lod_map = format!("{}lod", opts.prefix);
+    let mut parent_of: HashMap<u32, usize> = HashMap::new();
+    for (i, l) in lods.iter().enumerate() {
+        for &u in &l.children {
+            parent_of.insert(u, i);
+        }
+    }
+    // A stand-in's children are every drawable of the units it stands in for.
+    let mut child_counts = vec![0usize; lods.len()];
+    for (u, &i) in &parent_of {
+        child_counts[i] += by_unit.get(u).map_or(0, Vec::len);
+    }
+    let mut models = Vec::new();
+    for (unit, unit_models) in by_unit {
+        write_ymap(out_meta, unit, &unit_models, parent_of.get(&unit).map(|&i| (lod_map.as_str(), i)), opts)?;
         models.extend(unit_models);
     }
+    if !lods.is_empty() {
+        write_lod_ymap(out_meta, &lod_map, &lods, &child_counts, opts)?;
+    }
+    let lod_count = lods.len();
+    models.extend(lods.into_iter().map(|l| l.model));
     write_ytyp(out_meta, &models, opts)?;
-    println!("wrote {} drawables, {}paradise.ytyp, {} ymaps", models.len(), opts.prefix, usage.len());
+    println!("wrote {} drawables ({lod_count} backdrops), {}paradise.ytyp, {} ymaps", models.len(), opts.prefix, usage.len());
+    Ok(())
+}
+
+/// Every backdrop piece Burnout places, once each (the same piece is listed
+/// by every unit it's drawn from, its rotation sometimes a rounding error
+/// apart), with the units listing it.
+fn collect_backdrops(game: &Path, bdb: &Bundle) -> Result<Vec<BackdropInst>> {
+    let mut units: Vec<u32> = std::fs::read_dir(game)?
+        .filter_map(|e| e.ok()?.file_name().into_string().ok()?.strip_prefix("TRK_UNIT")?.strip_suffix("_GR.BNDL")?.parse().ok())
+        .collect();
+    units.sort();
+    let mut list: Vec<BackdropInst> = Vec::new();
+    let mut index: HashMap<(u64, [i32; 3]), usize> = HashMap::new();
+    for unit in units {
+        let b = Bundle::open(game.join(format!("TRK_UNIT{unit}_GR.BNDL")))?;
+        let Some(e) = b.entries.iter().find(|e| e.type_id == types::INSTANCE_LIST) else { continue };
+        let r = Res::load(&b, e)?;
+        let m = &r.main;
+        let (arr, size, count) = (bnd2::u32_at(m, 0) as usize, bnd2::u32_at(m, 4) as usize, bnd2::u32_at(m, 8) as usize);
+        for i in count..size {
+            let o = arr + i * 0x50;
+            if o + 0x50 > m.len() {
+                break;
+            }
+            let Some(model) = r.import(o) else { continue };
+            if bdb.find(model).is_none() {
+                continue;
+            }
+            let mut transform = [0f32; 16];
+            for (k, t) in transform.iter_mut().enumerate() {
+                *t = bnd2::f32_at(m, o + 0x10 + k * 4);
+            }
+            let zone = bnd2::u16_at(m, o + 4) as i16;
+            let at = [12, 13, 14].map(|k| (transform[k] * 10.0).round() as i32);
+            let i = *index.entry((model, at)).or_insert_with(|| {
+                list.push(BackdropInst { model, zone, transform, listed_by: Vec::new() });
+                list.len() - 1
+            });
+            list[i].listed_by.push(unit);
+        }
+    }
+    Ok(list)
+}
+
+/// PVS zone bounds (Burnout x, z: min, max) by zone id, which is the unit number.
+fn zone_bounds(game: &Path) -> HashMap<u32, ([f32; 2], [f32; 2])> {
+    let mut out = HashMap::new();
+    let Ok(b) = Bundle::open(game.join("PVS.BNDL")) else { return out };
+    let Some(r) = b.entries.first().and_then(|e| Res::load(&b, e).ok()) else { return out };
+    let m = &r.main;
+    let (zones, n) = (bnd2::u32_at(m, 4) as usize, bnd2::u32_at(m, 0x10) as usize);
+    for i in 0..n {
+        let z = zones + i * 0x30;
+        if z + 0x30 > m.len() {
+            break;
+        }
+        let (pts, np) = (bnd2::u32_at(m, z) as usize, bnd2::u16_at(m, z + 0x1A) as usize);
+        if np == 0 || pts + np * 16 > m.len() {
+            continue;
+        }
+        // Points are padded Vector2s (x, z).
+        let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for k in 0..np {
+            for c in 0..2 {
+                let v = bnd2::f32_at(m, pts + k * 16 + c * 4);
+                lo[c] = lo[c].min(v);
+                hi[c] = hi[c].max(v);
+            }
+        }
+        out.insert(bnd2::u64_at(m, z + 0x10) as u32, (lo, hi));
+    }
+    out
+}
+
+/// A backdrop piece's top-LOD geometry (in its own space).
+fn piece_geometry(bdb: &Bundle, model: u64) -> Vec<bw::MeshGeometry> {
+    (|| -> Option<Vec<bw::MeshGeometry>> {
+        let m = bw::parse_model(&Res::load(bdb, bdb.find(model)?).ok()?);
+        bw::decode_renderable(bdb, bdb.find(m.lod0()?)?).ok()
+    })()
+    .unwrap_or_default()
+}
+
+/// Exports the backdrops and decides what each is:
+/// - the stand-in for a unit (its LOD parent): `BdZone<n>`;
+/// - a big stand-in (Big Surf Island) for the units it covers that have none;
+/// - scenery, always drawn: what Burnout still draws from the units next to
+///   it (the mountains), and the other pieces with no full-detail model
+///   anywhere (the Paradise City sign: Burnout hides it close up, but only
+///   from where it can't be seen);
+/// - left out: water planes, lights, the whole-world proxy, the patches
+///   Burnout puts over holes in its distant view.
+fn export_backdrops(game: &Path, out: &Path, ex: &mut Exporter, by_unit: &std::collections::BTreeMap<u32, Vec<UnitModel>>, opts: &Options) -> Result<Vec<LodModel>> {
+    let Ok(bdb) = Bundle::open(game.join("GLOBALBACKDROPS.BNDL")) else {
+        println!("backdrops: no GLOBALBACKDROPS.BNDL");
+        return Ok(Vec::new());
+    };
+    let list = collect_backdrops(game, &bdb)?;
+    let zones = zone_bounds(game);
+    let debug = std::env::var_os("BPX_DEBUG_BACKDROPS").is_some();
+    let name_of = |inst: &BackdropInst| bdb.name_of(inst.model).map(crate::export::short_name).unwrap_or_else(|| format!("{:08x}", inst.model as u32));
+
+    // The drawables to make: their pieces, and the units they stand in for.
+    let mut parts: Vec<(&BackdropInst, Vec<u32>)> = Vec::new();
+    let mut part_of_unit: HashMap<u32, usize> = HashMap::new();
+    let mut others: Vec<&BackdropInst> = Vec::new();
+    let (mut scenery, mut skipped) = (0, 0);
+    for inst in &list {
+        let raw_name = name_of(inst);
+        let lower = raw_name.to_ascii_lowercase();
+        let role = if ["water", "lake", "light", "cheap", "hole", "terrain_fix", "pvsfix"].iter().any(|w| lower.contains(w)) {
+            skipped += 1;
+            "left out"
+        } else if inst.zone >= 0 {
+            let unit = inst.zone as u32;
+            if by_unit.contains_key(&unit) && !part_of_unit.contains_key(&unit) {
+                part_of_unit.insert(unit, parts.len());
+                parts.push((inst, vec![unit]));
+                "stand-in"
+            } else {
+                skipped += 1;
+                "left out (no unit)"
+            }
+        } else {
+            // Scenery: still drawn from the units nearest it.
+            let at = [inst.transform[12], inst.transform[14]];
+            let mut near: Vec<(f32, u32)> = by_unit
+                .keys()
+                .filter_map(|u| zones.get(u).map(|(lo, hi)| (((lo[0] + hi[0]) * 0.5 - at[0]).hypot((lo[1] + hi[1]) * 0.5 - at[1]), *u)))
+                .collect();
+            near.sort_by(|a, b| a.0.total_cmp(&b.0));
+            if near.iter().take(6).filter(|(_, u)| inst.listed_by.contains(u)).count() >= SCENERY_LISTED {
+                scenery += 1;
+                parts.push((inst, Vec::new()));
+                "scenery"
+            } else {
+                others.push(inst);
+                "other"
+            }
+        };
+        if debug {
+            eprintln!("backdrop {raw_name} zone {} at {:?} {role}, listed by {:?}", inst.zone, &inst.transform[12..15], inst.listed_by);
+        }
+    }
+
+    // The rest (GTA x/y bounds), biggest first: stand-ins for the units they
+    // cover that have none, else scenery.
+    let mut big: Vec<(&BackdropInst, [f32; 2], [f32; 2])> = Vec::new();
+    for inst in others {
+        let pos: Vec<[f32; 3]> = piece_geometry(&bdb, inst.model).iter().flat_map(|g| g.positions.iter().map(|&p| opts.placement.apply(transform_point(&inst.transform, p)))).collect();
+        let (lo, hi) = bbox(pos.iter());
+        // Empty (BD_airport01 is two triangles with no area).
+        if pos.is_empty() || (hi[0] - lo[0]).max(hi[1] - lo[1]) < 1.0 {
+            skipped += 1;
+            continue;
+        }
+        big.push((inst, [lo[0], lo[1]], [hi[0], hi[1]]));
+    }
+    // Footprint (GTA x/y) of each unit's drawables.
+    let footprint: HashMap<u32, ([f32; 2], [f32; 2])> = by_unit
+        .iter()
+        .map(|(&u, ms)| {
+            let lo = ms.iter().fold([f32::MAX; 2], |a, m| [a[0].min(m.origin[0] + m.bb_min[0]), a[1].min(m.origin[1] + m.bb_min[1])]);
+            let hi = ms.iter().fold([f32::MIN; 2], |a, m| [a[0].max(m.origin[0] + m.bb_max[0]), a[1].max(m.origin[1] + m.bb_max[1])]);
+            (u, (lo, hi))
+        })
+        .collect();
+    big.sort_by(|a, b| ((b.2[0] - b.1[0]) * (b.2[1] - b.1[1])).total_cmp(&((a.2[0] - a.1[0]) * (a.2[1] - a.1[1]))));
+    let mut covering = 0;
+    for (inst, lo, hi) in big {
+        let mut children: Vec<u32> = footprint
+            .iter()
+            .filter(|(u, (ulo, uhi))| {
+                let w = (hi[0].min(uhi[0]) - lo[0].max(ulo[0])).max(0.0);
+                let h = (hi[1].min(uhi[1]) - lo[1].max(ulo[1])).max(0.0);
+                !part_of_unit.contains_key(*u) && w * h / ((uhi[0] - ulo[0]) * (uhi[1] - ulo[1])).max(1.0) >= STAND_IN_COVER
+            })
+            .map(|(u, _)| *u)
+            .collect();
+        if debug {
+            eprintln!("backdrop {} covers units {children:?}", name_of(inst));
+        }
+        if children.is_empty() {
+            scenery += 1;
+        } else {
+            children.sort();
+            for &u in &children {
+                part_of_unit.insert(u, parts.len());
+            }
+            covering += 1;
+        }
+        parts.push((inst, children));
+    }
+
+    // One drawable per part.
+    let lod_txd = format!("{}txd_lod", opts.prefix);
+    let mut materials: HashMap<u64, Option<(ShaderKey, bool)>> = HashMap::new();
+    let mut stems: Vec<String> = Vec::new();
+    let mut lods: Vec<LodModel> = Vec::new();
+    let mut cut = 0;
+    for (inst, children) in parts {
+        // Lower case: the game finds a drawable by its lower-cased file name,
+        // while CodeWalker hashes archetype names as written.
+        let name = format!("{}lod_{}_{:08x}", opts.prefix, name_of(inst).chars().take(32).collect::<String>(), joaat(&format!("{:?}", &inst.transform[12..15]))).to_ascii_lowercase();
+        // A stand-in covering several units is cut into one piece per unit,
+        // each triangle going to the unit whose footprint is nearest: GTA
+        // only hides a LOD once every child is in range, and Big Surf Island
+        // is wider than that range, so one parent for all of it stayed drawn
+        // over the island's full detail.
+        let pieces: Vec<(String, Vec<u32>)> = if children.len() > 1 { children.iter().map(|&u| (format!("{name}_{u}"), vec![u])).collect() } else { vec![(name, children.clone())] };
+        let nearest = |c: [f32; 3]| -> Option<u32> {
+            let gap = |u: &u32| {
+                let (lo, hi) = footprint[u];
+                let d = [(lo[0] - c[0]).max(c[0] - hi[0]).max(0.0), (lo[1] - c[1]).max(c[1] - hi[1]).max(0.0)];
+                let mid = ((lo[0] + hi[0]) * 0.5 - c[0]).hypot((lo[1] + hi[1]) * 0.5 - c[1]);
+                (d[0].hypot(d[1]), mid)
+            };
+            children.iter().min_by(|a, b| gap(a).partial_cmp(&gap(b)).unwrap_or(std::cmp::Ordering::Equal)).copied()
+        };
+        for (piece, units) in pieces {
+            let keep = |c: [f32; 3]| units.first().is_some_and(|&u| nearest(c) == Some(u));
+            let Some((mut model, used)) = export_lod_model(&bdb, inst, &piece, &lod_txd, out, ex, &mut materials, opts, (children.len() > 1).then_some(&keep as &dyn Fn([f32; 3]) -> bool))? else {
+                if children.len() > 1 {
+                    println!("backdrops: {piece}: no triangles nearest unit {units:?} (left without a stand-in)");
+                }
+                skipped += 1;
+                continue;
+            };
+            if children.len() > 1 {
+                cut += 1;
+            }
+            model.lod_dist = if units.is_empty() { opts.lod_far } else { STAND_IN_DIST };
+            stems.extend(used);
+            lods.push(LodModel { model, children: units });
+        }
+    }
+    stems.sort();
+    stems.dedup();
+    write_ytd(out, &lod_txd, &stems)?;
+    let mb = stems.iter().map(|t| texture_bytes(out, t)).sum::<u64>() as f64 / 1048576.0;
+    let units = lods.iter().map(|l| l.children.len()).sum::<usize>();
+    println!(
+        "backdrops: {} placed; {} stand-ins for {units} units ({covering} covering several, cut into {cut} pieces), {scenery} scenery, {skipped} left out; {} textures ({mb:.1} MB)",
+        list.len(),
+        lods.len() - scenery,
+        stems.len()
+    );
+    Ok(lods)
+}
+
+/// A backdrop piece as a drawable with cut-down textures, and the textures
+/// it uses; overlays, glass and water are left out (they don't read from afar).
+/// With `keep`, only the triangles whose centre (GTA coordinates) it accepts.
+#[allow(clippy::too_many_arguments)]
+fn export_lod_model(
+    bdb: &Bundle,
+    inst: &BackdropInst,
+    name: &str,
+    txd: &str,
+    out: &Path,
+    ex: &mut Exporter,
+    materials: &mut HashMap<u64, Option<(ShaderKey, bool)>>,
+    opts: &Options,
+    keep: Option<&dyn Fn([f32; 3]) -> bool>,
+) -> Result<Option<(UnitModel, Vec<String>)>> {
+    let mut shaders: Vec<ShaderKey> = Vec::new();
+    let mut shader_of: HashMap<ShaderKey, usize> = HashMap::new();
+    let mut open: HashMap<usize, Geom> = HashMap::new();
+    let mut done: Vec<Geom> = Vec::new();
+    for g in &piece_geometry(bdb, inst.model) {
+        let Some(mat) = g.material else { continue };
+        if g.indices.is_empty() {
+            continue;
+        }
+        let pos: Vec<[f32; 3]> = g.positions.iter().map(|&p| opts.placement.apply(transform_point(&inst.transform, p))).collect();
+        // The triangles kept, and the vertices they use (in first-use order;
+        // all of them, in order, without `keep`).
+        let mut tris: Vec<u32> = Vec::new();
+        let mut remap: HashMap<u32, u32> = HashMap::new();
+        let mut used: Vec<usize> = Vec::new();
+        if let Some(keep) = keep {
+            for t in g.indices.chunks_exact(3) {
+                let c = [0, 1, 2].map(|k| t.iter().map(|&i| pos[i as usize][k]).sum::<f32>() / 3.0);
+                if keep(c) {
+                    for &i in t {
+                        let at = *remap.entry(i).or_insert_with(|| {
+                            used.push(i as usize);
+                            used.len() as u32 - 1
+                        });
+                        tris.push(at);
+                    }
+                }
+            }
+            if tris.is_empty() {
+                continue;
+            }
+        } else {
+            tris = g.indices.clone();
+            used = (0..pos.len()).collect();
+        }
+        let key = materials
+            .entry(mat)
+            .or_insert_with(|| {
+                let info = ex.material_info(bdb, mat);
+                if info.greyscale() || info.transparent() || info.shader.starts_with("Water") {
+                    return None;
+                }
+                let (stem, _) = ex.texture_lod(info.diffuse?, LOD_TEXTURE_MAX, out)?;
+                Some(((stem, if info.alpha_tested() { Kind::Cutout } else { Kind::Opaque }), info.double_sided()))
+            })
+            .clone();
+        let Some((key, double)) = key else { continue };
+        let si = *shader_of.entry(key.clone()).or_insert_with(|| {
+            shaders.push(key.clone());
+            shaders.len() - 1
+        });
+        let nrm: Vec<[f32; 3]> = used
+            .iter()
+            .map(|&i| normalize(opts.placement.apply_dir(normalize(transform_dir(&inst.transform, g.normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]))))))
+            .collect();
+        let sides: &[bool] = if double { &[false, true] } else { &[false] };
+        for &back in sides {
+            let geom = open.entry(si).or_insert_with(|| Geom { shader: si, ..Default::default() });
+            if geom.pos.len() + used.len() > MAX_GEOM_VERTS {
+                done.push(std::mem::replace(geom, Geom { shader: si, ..Default::default() }));
+            }
+            let base = geom.pos.len() as u32;
+            for (j, &i) in used.iter().enumerate() {
+                geom.pos.push(pos[i]);
+                geom.nrm.push(if back { nrm[j].map(|c| -c) } else { nrm[j] });
+                geom.uv.push(g.uvs.get(i).copied().unwrap_or([0.0, 0.0]));
+            }
+            for t in tris.chunks(3) {
+                if back {
+                    geom.idx.extend([base + t[0], base + t[2], base + t[1]]);
+                } else {
+                    geom.idx.extend(t.iter().map(|&i| base + i));
+                }
+            }
+        }
+    }
+    done.extend(open.into_values());
+    done.retain(|g| !g.idx.is_empty());
+    if done.is_empty() {
+        return Ok(None);
+    }
+    done.sort_by_key(|g| g.shader);
+    let (lo, hi) = bbox(done.iter().flat_map(|g| g.pos.iter()));
+    let origin = [0, 1, 2].map(|k| (lo[k] + hi[k]) * 0.5);
+    for g in &mut done {
+        for p in &mut g.pos {
+            *p = [p[0] - origin[0], p[1] - origin[1], p[2] - origin[2]];
+        }
+    }
+    let (glo, ghi) = bbox(done.iter().flat_map(|g| g.pos.iter()));
+    let triangles = done.iter().map(|g| g.idx.len() / 3).sum();
+    write_ydr(out, name, &shaders, &done)?;
+    let stems = shaders.iter().map(|k| k.0.clone()).collect();
+    Ok(Some((UnitModel { name: name.to_string(), txd: txd.to_string(), origin, bb_min: glo, bb_max: ghi, triangles, lod_dist: STAND_IN_DIST }, stems)))
+}
+
+/// The LOD map: every backdrop entity; a stand-in's children are its units'
+/// drawables (in their own map files, which name this one as parent).
+fn write_lod_ymap(out: &Path, ymap: &str, lods: &[LodModel], child_counts: &[usize], opts: &Options) -> Result<()> {
+    let mut wmin = [f32::MAX; 3];
+    let mut wmax = [f32::MIN; 3];
+    let mut far = 0f32;
+    let mut entities = String::new();
+    for (i, l) in lods.iter().enumerate() {
+        let m = &l.model;
+        for k in 0..3 {
+            wmin[k] = wmin[k].min(m.origin[k] + m.bb_min[k]);
+            wmax[k] = wmax[k].max(m.origin[k] + m.bb_max[k]);
+        }
+        far = far.max(m.lod_dist);
+        let num = child_counts[i];
+        let child_dist = if num > 0 { opts.lod_dist } else { 0.0 };
+        let _ = write!(
+            entities,
+            "  <Item type=\"CEntityDef\">\n   <archetypeName>{}</archetypeName>\n   <flags value=\"1572864\" />\n   <guid value=\"{}\" />\n   {}\n   <rotation x=\"0\" y=\"0\" z=\"0\" w=\"1\" />\n   <scaleXY value=\"1\" />\n   <scaleZ value=\"1\" />\n   <parentIndex value=\"-1\" />\n   <lodDist value=\"{}\" />\n   <childLodDist value=\"{child_dist}\" />\n   <lodLevel>LODTYPES_DEPTH_LOD</lodLevel>\n   <numChildren value=\"{num}\" />\n   <priorityLevel>PRI_REQUIRED</priorityLevel>\n   <extensions />\n   <ambientOcclusionMultiplier value=\"255\" />\n   <artificialAmbientOcclusion value=\"255\" />\n   <tintValue value=\"0\" />\n  </Item>\n",
+            m.name,
+            joaat(&m.name),
+            v3("position", m.origin),
+            m.lod_dist
+        );
+    }
+    let smin = [wmin[0] - far, wmin[1] - far, wmin[2] - far];
+    let smax = [wmax[0] + far, wmax[1] + far, wmax[2] + far];
+    let head = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CMapData>\n <name>{ymap}</name>\n <parent />\n <flags value=\"2\" />\n <contentFlags value=\"2\" />\n {}\n {}\n {}\n {}\n <entities>\n",
+        v3("streamingExtentsMin", smin),
+        v3("streamingExtentsMax", smax),
+        v3("entitiesExtentsMin", wmin),
+        v3("entitiesExtentsMax", wmax)
+    );
+    let tail = YMAP_TAIL.replace("{ymap}", ymap);
+    std::fs::write(out.join(format!("{ymap}.ymap.xml")), head + &entities + &tail)?;
     Ok(())
 }
 
@@ -261,7 +752,7 @@ fn unit_textures(
         })()
         .unwrap_or_default();
         for mat in mats {
-            let (base, line, _) = material_keys(cache, ex, &b, mat, out);
+            let (base, line, _, _) = material_keys(cache, ex, &b, mat, out);
             stems.push(base.0);
             if let Some(l) = line {
                 stems.push(l.0);
@@ -342,7 +833,7 @@ fn group_textures(
 
 /// Writes an uncompressed 32-bit texture with a classic (non-DX10) DDS header
 /// (A8R8G8B8, single mip), which CodeWalker's importer reads reliably.
-fn write_rgba_dds(path: &Path, w: u32, h: u32, rgba: &[u8]) -> Result<()> {
+pub(crate) fn write_rgba_dds(path: &Path, w: u32, h: u32, rgba: &[u8]) -> Result<()> {
     let mut b = Vec::with_capacity(128 + rgba.len());
     let put = |b: &mut Vec<u8>, v: u32| b.extend_from_slice(&v.to_le_bytes());
     b.extend_from_slice(b"DDS ");
@@ -375,6 +866,9 @@ fn write_white_texture(dir: &Path) -> Result<()> {
     // One BC1 block of opaque white, 4x4, no mips.
     let t = bw::Texture { dxgi_format: 71, width: 4, height: 4, depth: 1, mips: 1, data: vec![0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0] };
     tex::write_dds(&t, &dir.join(format!("{WHITE_TEXTURE}.dds")))?;
+    // One BC1 block of opaque black.
+    let t = bw::Texture { dxgi_format: 71, width: 4, height: 4, depth: 1, mips: 1, data: vec![0, 0, 0, 0, 0, 0, 0, 0] };
+    tex::write_dds(&t, &dir.join(format!("{BLACK_TEXTURE}.dds")))?;
     // Pale blue-grey, ~35% opaque, uncompressed RGBA 4x4.
     write_rgba_dds(&dir.join(format!("{GLASS_TEXTURE}.dds")), 4, 4, &[150u8, 170, 185, 90].repeat(16))
 }
@@ -428,7 +922,9 @@ fn halve(w: u32, h: u32, rgba: &[u8]) -> (u32, u32, Vec<u8>) {
 /// Base-layer and optional line-layer shader for a material.
 fn shaders_for(ex: &mut Exporter, info: &MaterialInfo, out: &Path) -> (ShaderKey, Option<ShaderKey>) {
     let diffuse = info.diffuse.and_then(|id| ex.texture(id).map(|t| (id, t)));
-    let base = if info.greyscale() {
+    let base = if info.shader.starts_with("Cable") && diffuse.is_none() {
+        (BLACK_TEXTURE.into(), Kind::Opaque)
+    } else if info.greyscale() {
         match diffuse.and_then(|(id, (stem, _))| write_darkening_texture(ex, id, out, &stem)) {
             Some(name) => (name, Kind::Decal),
             None => (WHITE_TEXTURE.into(), Kind::Decal),
@@ -480,16 +976,28 @@ fn export_unit(
                 bw::decode_renderable(&b, b.find(m.lod0()?)?).ok()
             })()
             .unwrap_or_default();
+            if geo.is_empty() {
+                NO_GEOMETRY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if std::env::var_os("BPX_DEBUG_SHADERS").is_some() {
+                    eprintln!("no geometry: unit model {:x} in bundle {}", inst.model, b.find(inst.model).is_some());
+                }
+            }
             geom_cache.insert(inst.model, geo);
         }
         for g in &geom_cache[&inst.model] {
             if g.indices.is_empty() {
                 continue;
             }
-            let (base, line, double) = match g.material {
+            let (base, line, double, line_uv1) = match g.material {
                 Some(mat) => material_keys(cache, ex, &b, mat, out),
-                None => ((WHITE_TEXTURE.into(), Kind::Opaque), None, false),
+                None => ((WHITE_TEXTURE.into(), Kind::Opaque), None, false, false),
             };
+            if base.0 == WHITE_TEXTURE && std::env::var_os("BPX_DEBUG_WHITE").is_some() {
+                eprintln!("white base: unit {} model {:x} {} material {:x?} {} ({} triangles, {} uvs, {} normals)", unit, inst.model, b.name_of(inst.model).map(crate::export::short_name).unwrap_or_default(), g.material, g.material.and_then(|m| b.name_of(m)).map(crate::export::short_name).unwrap_or_default(), g.indices.len() / 3, g.uvs.len(), g.normals.len());
+            }
+            if g.material.is_none() && std::env::var_os("BPX_DEBUG_WHITE").is_some() {
+                eprintln!("no material: unit {} model {:x} {} ({} triangles)", unit, inst.model, b.name_of(inst.model).map(crate::export::short_name).unwrap_or_default(), g.indices.len() / 3);
+            }
             // World-space vertices and normals for this instance.
             let pos: Vec<[f32; 3]> = g.positions.iter().map(|&p| opts.placement.apply(transform_point(&inst.transform, p))).collect();
             let nrm: Vec<[f32; 3]> = (0..g.positions.len())
@@ -532,8 +1040,10 @@ fn export_unit(
             emit(&base, &uv0, base_lift);
             if let Some(line) = &line {
                 // Road meshes usually carry a single UV set shared by the
-                // asphalt and its line layer; use a second set if present.
-                let uv = if g.uvs1.len() == g.positions.len() { &g.uvs1 } else { &uv0 };
+                // asphalt and its line layer; use a second set if present,
+                // unless it's the light map's (lightmapped road shaders: on
+                // it the line texture came out as one solid colour).
+                let uv = if line_uv1 && g.uvs1.len() == g.positions.len() { &g.uvs1 } else { &uv0 };
                 emit(line, uv, DECAL_LIFT);
             }
         }
@@ -575,7 +1085,7 @@ fn export_unit(
         let (glo, ghi) = bbox(geoms.iter().flat_map(|g| g.pos.iter()));
         let triangles = geoms.iter().map(|g| g.idx.len() / 3).sum();
         write_ydr(out, &name, &local, &geoms)?;
-        models.push(UnitModel { name, txd: format!("{}txd_{gi}", opts.prefix), origin, bb_min: glo, bb_max: ghi, triangles });
+        models.push(UnitModel { name, txd: format!("{}txd_{gi}", opts.prefix), origin, bb_min: glo, bb_max: ghi, triangles, lod_dist: opts.lod_dist });
     }
     Ok(models)
 }
@@ -663,7 +1173,7 @@ fn write_ytyp(out: &Path, models: &[UnitModel], opts: &Options) -> Result<()> {
         let _ = write!(
             s,
             "  <Item type=\"CBaseArchetypeDef\">\n   <lodDist value=\"{}\" />\n   <flags value=\"0\" />\n   <specialAttribute value=\"0\" />\n   {}\n   {}\n   {}\n   <bsRadius value=\"{radius}\" />\n   <hdTextureDist value=\"200\" />\n   <name>{}</name>\n   <textureDictionary>{}</textureDictionary>\n   <clipDictionary />\n   <drawableDictionary />\n   <physicsDictionary />\n   <assetType>ASSET_TYPE_DRAWABLE</assetType>\n   <assetName>{}</assetName>\n   <extensions />\n  </Item>\n",
-            opts.lod_dist,
+            m.lod_dist,
             v3("bbMin", m.bb_min),
             v3("bbMax", m.bb_max),
             v3("bsCentre", centre),
@@ -681,9 +1191,15 @@ fn write_ytyp(out: &Path, models: &[UnitModel], opts: &Options) -> Result<()> {
     Ok(())
 }
 
-fn write_ymap(out: &Path, unit: u32, models: &[UnitModel], opts: &Options) -> Result<()> {
+/// A unit's map file. With `parent` (the LOD map's name and the index of the
+/// unit's stand-in there) its drawables are that stand-in's children.
+fn write_ymap(out: &Path, unit: u32, models: &[UnitModel], parent: Option<(&str, usize)>, opts: &Options) -> Result<()> {
     let ymap = format!("{}map_{unit}", opts.prefix);
     let d = opts.lod_dist;
+    let (parent_tag, flags, parent_index, level) = match parent {
+        Some((name, i)) => (format!("<parent>{name}</parent>"), 1572872, i as i64, "LODTYPES_DEPTH_HD"),
+        None => ("<parent />".to_string(), 1572864, -1, "LODTYPES_DEPTH_ORPHANHD"),
+    };
     let mut wmin = [f32::MAX; 3];
     let mut wmax = [f32::MIN; 3];
     let mut entities = String::new();
@@ -694,7 +1210,7 @@ fn write_ymap(out: &Path, unit: u32, models: &[UnitModel], opts: &Options) -> Re
         }
         let _ = write!(
             entities,
-            "  <Item type=\"CEntityDef\">\n   <archetypeName>{}</archetypeName>\n   <flags value=\"1572864\" />\n   <guid value=\"{}\" />\n   {}\n   <rotation x=\"0\" y=\"0\" z=\"0\" w=\"1\" />\n   <scaleXY value=\"1\" />\n   <scaleZ value=\"1\" />\n   <parentIndex value=\"-1\" />\n   <lodDist value=\"{d}\" />\n   <childLodDist value=\"0\" />\n   <lodLevel>LODTYPES_DEPTH_ORPHANHD</lodLevel>\n   <numChildren value=\"0\" />\n   <priorityLevel>PRI_REQUIRED</priorityLevel>\n   <extensions />\n   <ambientOcclusionMultiplier value=\"255\" />\n   <artificialAmbientOcclusion value=\"255\" />\n   <tintValue value=\"0\" />\n  </Item>\n",
+            "  <Item type=\"CEntityDef\">\n   <archetypeName>{}</archetypeName>\n   <flags value=\"{flags}\" />\n   <guid value=\"{}\" />\n   {}\n   <rotation x=\"0\" y=\"0\" z=\"0\" w=\"1\" />\n   <scaleXY value=\"1\" />\n   <scaleZ value=\"1\" />\n   <parentIndex value=\"{parent_index}\" />\n   <lodDist value=\"{d}\" />\n   <childLodDist value=\"0\" />\n   <lodLevel>{level}</lodLevel>\n   <numChildren value=\"0\" />\n   <priorityLevel>PRI_REQUIRED</priorityLevel>\n   <extensions />\n   <ambientOcclusionMultiplier value=\"255\" />\n   <artificialAmbientOcclusion value=\"255\" />\n   <tintValue value=\"0\" />\n  </Item>\n",
             m.name,
             joaat(&m.name),
             v3("position", m.origin)
@@ -703,7 +1219,7 @@ fn write_ymap(out: &Path, unit: u32, models: &[UnitModel], opts: &Options) -> Re
     let smin = [wmin[0] - d, wmin[1] - d, wmin[2] - d];
     let smax = [wmax[0] + d, wmax[1] + d, wmax[2] + d];
     let head = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CMapData>\n <name>{ymap}</name>\n <parent />\n <flags value=\"0\" />\n <contentFlags value=\"1\" />\n {}\n {}\n {}\n {}\n <entities>\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CMapData>\n <name>{ymap}</name>\n {parent_tag}\n <flags value=\"0\" />\n <contentFlags value=\"1\" />\n {}\n {}\n {}\n {}\n <entities>\n",
         v3("streamingExtentsMin", smin),
         v3("streamingExtentsMax", smax),
         v3("entitiesExtentsMin", wmin),

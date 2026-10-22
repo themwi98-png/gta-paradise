@@ -16,6 +16,8 @@ use std::time::Instant;
 /// Burnout -> GTA placement (9.9 puts Paradise's sea at GTA's sea level).
 const OFFSET: [&str; 2] = ["--offset", "0,0,9.9"];
 const COL: &str = "tools/collision/paradise_extra.pcx";
+/// Added collision pieces dropped for modded maps (bpx col-modcompat).
+const MODDED: &str = "tools/collision/modded_maps.json";
 
 struct Step {
     name: &'static str,
@@ -54,10 +56,29 @@ fn baked(c: &Ctx, key: &str, default: f64) -> f64 {
     read(&c.games.gta.join("paradise.ini")).or_else(|| read(&c.path("tools/paradise.ini"))).unwrap_or(default).clamp(0.5, 5.0)
 }
 
-/// `@car_grip` and `@car_brakes`, as given to `bpx handling`. (Part of the
-/// handling step's fingerprint, so changing either redoes that step.)
+/// An on/off setting baked into the car data, read like `baked`.
+fn baked_switch(c: &Ctx, key: &str, default: bool) -> bool {
+    let read = |p: &Path| -> Option<bool> {
+        let text = std::fs::read_to_string(p).ok()?;
+        let line = text.lines().find(|l| l.split_whitespace().next().is_some_and(|k| k.eq_ignore_ascii_case(key)))?;
+        match line.split_whitespace().nth(1)?.to_ascii_lowercase().as_str() {
+            "on" | "1" | "true" => Some(true),
+            "off" | "0" | "false" => Some(false),
+            _ => None,
+        }
+    };
+    read(&c.games.gta.join("paradise.ini")).or_else(|| read(&c.path("tools/paradise.ini"))).unwrap_or(default)
+}
+
+/// `@car_grip`, `@car_brakes` and `@tyres_clip`, as given to `bpx handling`.
+/// (Part of the handling step's fingerprint, so changing any redoes that step.)
 fn handling_args(c: &Ctx) -> String {
-    format!("--grip {} --brakes {}", baked(c, "@car_grip", 1.2), baked(c, "@car_brakes", 2.5))
+    format!(
+        "--grip {} --brakes {} --tyres-clip {}",
+        baked(c, "@car_grip", 1.2),
+        baked(c, "@car_brakes", 2.5),
+        if baked_switch(c, "@tyres_clip", true) { "on" } else { "off" }
+    )
 }
 
 /// What the install step's fingerprint covers outside the working folder:
@@ -66,7 +87,7 @@ fn handling_args(c: &Ctx) -> String {
 fn installed(c: &Ctx) -> String {
     let g = &c.games.gta;
     let mut ids = vec![file_id(&c.layout.asi)];
-    for rel in ["GTA5.exe", "update/update.rpf", "mods/update/update.rpf", "mods/update/x64/dlcpacks/bpparadise/dlc.rpf", "paradise.asi", "paradise_col.bin", "paradise_props.csv"] {
+    for rel in ["GTA5.exe", "update/update.rpf", "mods/update/update.rpf", "mods/update/x64/dlcpacks/bpparadise/dlc.rpf", "paradise.asi", "paradise_col.bin", "paradise_props.csv", "paradise_junctions.txt", "paradise_shops.txt", "paradise_cars.txt", "paradise_roads.txt"] {
         ids.push(file_id(&g.join(rel)));
     }
     // A deleted paradise.ini (to get the defaults back) is put back. Its
@@ -80,7 +101,7 @@ const STEPS: &[Step] = &[
     Step {
         name: "collision",
         title: "Collision",
-        inputs: &[COL, "tools/edits/collision_edits.json"],
+        inputs: &[COL, MODDED, "tools/edits/collision_edits.json"],
         deps: &[],
         outputs: &["out/gta_col", "out/gta_col_xml/paradise_col.bin"],
         extra: nothing,
@@ -91,7 +112,7 @@ const STEPS: &[Step] = &[
     Step {
         name: "props",
         title: "Street props",
-        inputs: &["tools/props_map.csv", COL, "tools/edits/collision_edits.json"],
+        inputs: &["tools/props_map.csv", COL, MODDED, "tools/edits/collision_edits.json"],
         deps: &[],
         outputs: &["out/meta_props", "out/props/paradise_props.csv"],
         extra: nothing,
@@ -101,28 +122,48 @@ const STEPS: &[Step] = &[
     Step {
         name: "water",
         title: "Sea and lakes",
-        inputs: &[COL, "tools/edits/collision_edits.json", "tools/edits/water_edits.json"],
+        inputs: &[COL, MODDED, "tools/edits/collision_edits.json", "tools/edits/water_edits.json"],
         deps: &[],
         outputs: &["out/water_paradise.xml"],
         extra: nothing,
         run: water, map: true,
     },
-    Step { name: "paths", title: "Roads and traffic", inputs: &["tools/edits/traffic_edits.json", COL], deps: &[], outputs: &["out/gta_paths"], extra: nothing, run: paths, map: true },
+    Step {
+        name: "paths",
+        title: "Roads and traffic",
+        inputs: &["tools/edits/traffic_edits.json", "tools/edits/junction_edits.json", "out/props/paradise_props.csv", COL, MODDED],
+        deps: &[],
+        outputs: &["out/gta_paths", "out/traffic/paradise_junctions.txt", "out/gta_paths_xml/paradise_roads.txt"],
+        extra: nothing,
+        run: paths, map: true,
+    },
+    Step { name: "shops", title: "Junkyards, repairs and gas stations", inputs: &[LOTS], deps: &[], outputs: &["out/traffic/paradise_shops.txt"], extra: nothing, run: shops, map: true },
+    Step { name: "cars", title: "Junkyard car list", inputs: &[], deps: &[], outputs: &["out/cars/paradise_cars.txt"], extra: car_sources, run: cars, map: true },
     Step {
         name: "navmesh",
         title: "Pedestrian paths",
-        inputs: &[COL, "tools/edits/collision_edits.json", "tools/edits/sidewalk_edits.json"],
+        inputs: &[COL, MODDED, "tools/edits/collision_edits.json", "tools/edits/sidewalk_edits.json"],
         deps: &[],
         outputs: &["out/gta_navmesh"],
         extra: nothing,
         run: navmesh, map: true,
+    },
+    Step {
+        name: "minimap",
+        title: "Radar and map",
+        inputs: &[COL, MODDED, "tools/edits/collision_edits.json", "tools/edits/minimap_edits.json"],
+        deps: &["water"],
+        outputs: &["out/gta_minimap"],
+        extra: minimap_sources,
+        run: minimap,
+        map: true,
     },
     Step { name: "handling", title: "Car handling", inputs: &[], deps: &[], outputs: &["out/crash/update/common/data/handling.meta"], extra: handling_args, run: handling, map: false },
     Step {
         name: "install",
         title: "Installing into GTA V",
         inputs: &["tools/paradise.ini", "tools/edits/spawn_blocks.json", "tools/base_map_disable.txt", "tools/base_map_packs.txt"],
-        deps: &["pack", "water", "paths", "navmesh", "handling"],
+        deps: &["pack", "water", "paths", "shops", "cars", "navmesh", "minimap", "handling"],
         outputs: &[],
         extra: installed,
         run: install, map: false,
@@ -346,6 +387,18 @@ pub fn run_all(layout: &Layout, games: &Games, only: Option<&[String]>, rebuild:
     for g in [&games.gta, &games.burnout, &games.codewalker] {
         tools.add(g.to_string_lossy().as_bytes());
     }
+    // A mod installed into the same Burnout folder (a modded map) changes its
+    // files: build again.
+    let mut burnout_files: Vec<(String, String)> = std::fs::read_dir(&games.burnout)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file())
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), file_id(&e.path())))
+        .collect();
+    burnout_files.sort();
+    for (name, id) in burnout_files {
+        tools.add(name.as_bytes());
+        tools.add(id.as_bytes());
+    }
 
     for (i, step) in STEPS.iter().enumerate() {
         if only.is_some_and(|o| !o.iter().any(|n| n == step.name)) {
@@ -442,7 +495,90 @@ fn water(c: &Ctx) -> Result<()> {
 fn paths(c: &Ctx) -> Result<()> {
     c.clear(&["out/gta_paths_xml", "out/gta_paths"])?;
     c.bpx(&["gta-paths", &c.burnout(), "out/gta_paths_xml", OFFSET[0], OFFSET[1]])?;
+    // Junctions for the plugin's traffic lights (and the viewer).
+    c.bpx(&["gta-junctions", &c.burnout(), "out/traffic", OFFSET[0], OFFSET[1], "--props", "out/props/paradise_props.csv"])?;
     c.cw(&["convert", "out/gta_paths_xml", "out/gta_paths"])
+}
+
+/// The junkyards' display lots, marked in game.
+const LOTS: &str = "tools/edits/junkyard_lots.csv";
+
+/// Burnout's drive-thrus, for the plugin.
+fn shops(c: &Ctx) -> Result<()> {
+    if c.path(LOTS).is_file() {
+        c.bpx(&["gta-shops", &c.burnout(), "out/traffic", OFFSET[0], OFFSET[1], "--lots", LOTS])
+    } else {
+        c.bpx(&["gta-shops", &c.burnout(), "out/traffic", OFFSET[0], OFFSET[1]])
+    }
+}
+
+/// Rockstar's archives the junkyard's car list is read from (a GTA update
+/// or a new DLC pack changes them).
+fn car_sources(c: &Ctx) -> String {
+    let mut ids = vec![file_id(&c.games.gta.join("common.rpf")), file_id(&c.games.gta.join("update/update.rpf"))];
+    if let Ok(dir) = std::fs::read_dir(c.games.gta.join(r"update\x64\dlcpacks")) {
+        let mut packs: Vec<_> = dir.filter_map(|e| e.ok()).map(|e| e.path().join("dlc.rpf")).filter(|p| p.is_file()).collect();
+        packs.sort();
+        ids.extend(packs.iter().map(|p| file_id(p)));
+    }
+    ids.join("|")
+}
+
+/// Every road vehicle in the player's GTA (base game and DLC), for the
+/// junkyard's car list: from the vehicles.meta files in Rockstar's
+/// untouched archives.
+fn cars(c: &Ctx) -> Result<()> {
+    let src = "out/cars/src";
+    c.clear(&[src])?;
+    c.cw(&["rpf-extract", &c.gta(), "common.rpf", r"vehicles\.meta$", &format!("{src}/_common"), "--keep-paths"])?;
+    c.cw(&["rpf-extract", &c.gta(), "update/update.rpf", r"vehicles\.meta$", &format!("{src}/_update"), "--keep-paths"])?;
+    let packs = c.games.gta.join(r"update\x64\dlcpacks");
+    for e in std::fs::read_dir(&packs)?.filter_map(|e| e.ok()).filter(|e| e.path().join("dlc.rpf").is_file()) {
+        let p = e.file_name().to_string_lossy().into_owned();
+        c.cw(&["rpf-extract", &c.gta(), &format!("update/x64/dlcpacks/{p}/dlc.rpf"), r"vehicles\.meta$", &format!("{src}/{p}"), "--keep-paths"])?;
+    }
+    c.bpx(&["gta-cars", src, "out/cars/paradise_cars.txt"])
+}
+
+/// Rockstar's archives the minimap step starts from (a GTA update changes
+/// them).
+fn minimap_sources(c: &Ctx) -> String {
+    ["x64a.rpf", "update/update.rpf"].map(|rel| file_id(&c.games.gta.join(rel))).join("|")
+}
+
+/// GTA's radar tiles, zoomed-out map images and minimap tuning, drawn for
+/// Paradise City (see bpx's minimap.rs).
+fn minimap(c: &Ctx) -> Result<()> {
+    c.clear(&["out/gta_minimap_xml", "out/gta_minimap", "out/minimap_src"])?;
+    // GTA's own tuning file, with the images' place moved to fit Paradise.
+    c.cw(&["sample", &c.gta(), "x64a.rpf", "ymt", "out/minimap_src", "5", r"tune\minimap"])?;
+    // The game draws a radar tile's drawables only by the names its own
+    // tiles use: read them from the player's copy.
+    c.cw(&["rpf-extract", &c.gta(), "x64e.rpf", r"levels/gta5/minimap\.rpf/[^/]+\.ydd$", "out/minimap_src/tiles"])?;
+    c.cw(&["yddnames", "out/minimap_src/tiles", "out/minimap_src/tile_names.csv"])?;
+    c.bpx(&[
+        "gta-minimap",
+        COL,
+        "out/gta_minimap_xml",
+        OFFSET[0],
+        OFFSET[1],
+        "--ymt",
+        "out/minimap_src/minimap.ymt.pso.xml",
+        "--water",
+        "out/water_paradise.xml",
+        "--names",
+        "out/minimap_src/tile_names.csv",
+    ])?;
+    c.cw(&["convert", "out/gta_minimap_xml", "out/gta_minimap"])?;
+    // The zoomed-out images live in scaleform_generic.rpf with GTA's other
+    // UI textures: the archive is rebuilt with all of them, ours replacing
+    // the map's.
+    c.cw(&["rpf-extract", &c.gta(), "update/update.rpf", r"scaleform_generic\.rpf/[^/]+$", "out/gta_minimap/scaleform_generic"])?;
+    for e in std::fs::read_dir(c.path("out/gta_minimap/bitmaps"))? {
+        let e = e?;
+        std::fs::copy(e.path(), c.path("out/gta_minimap/scaleform_generic").join(e.file_name()))?;
+    }
+    Ok(())
 }
 
 fn navmesh(c: &Ctx) -> Result<()> {
@@ -613,6 +749,10 @@ fn install(c: &Ctx) -> Result<()> {
     let map_files = [
         ("out/gta_col_xml/paradise_col.bin", "paradise_col.bin"),
         ("out/props/paradise_props.csv", "paradise_props.csv"),
+        ("out/traffic/paradise_junctions.txt", "paradise_junctions.txt"),
+        ("out/traffic/paradise_shops.txt", "paradise_shops.txt"),
+        ("out/cars/paradise_cars.txt", "paradise_cars.txt"),
+        ("out/gta_paths_xml/paradise_roads.txt", "paradise_roads.txt"),
         ("tools/edits/spawn_blocks.json", "paradise_spawn_blocks.json"),
     ];
     for (from, to) in map_files {
@@ -675,6 +815,11 @@ fn install_map(c: &Ctx, mods_update_s: &str) -> Result<()> {
     for i in 1..=9 {
         c.cw(&["rpf-replace", &g, mods_update_s, &format!("x64/levels/gta5/navmeshes{i}.rpf"), "out/empty_dir_unused", "--open"])?;
     }
+
+    // The radar and pause map.
+    c.cw(&["rpf-replace", &g, mods_update_s, "x64/levels/gta5/minimap.rpf", "out/gta_minimap/tiles", "--open"])?;
+    c.cw(&["rpf-replace", &g, mods_update_s, "x64/data/cdimages/scaleform_generic.rpf", "out/gta_minimap/scaleform_generic", "--open"])?;
+    c.cw(&["rpf-put", &g, mods_update_s, "x64/data/tune/minimap.ymt", "out/gta_minimap/minimap.ymt", "--open"])?;
 
     // Population zones from Burnout's districts.
     c.cw(&["extract", &g, r"update\update.rpf\common\data\levels\gta5\popzone.ipl", "out/base_meta/popzone.orig.ipl"])?;

@@ -1,3 +1,134 @@
+# GTA Paradise v0.3.0
+
+Takedowns, police that fight back, Paradise City on the radar and pause map
+with GPS routes, Burnout's drive-thrus (junkyards with a car menu, repairs,
+gas and paint shops), working traffic lights, grinding, and the distant
+mountains and low-detail city.
+
+Every new setting lives in `paradise.ini` next to `GTA5.exe`. Most apply live
+while you play; the ones marked *(setup)* are built into the car data, so run
+the setup again after changing them.
+
+---
+
+## Takedowns
+
+- **Ram police cars into a crash to take them down.** A car you hit stays
+  vulnerable for a moment (`@takedown_window` 2 s): if it crashes, rolls or
+  spins out in that time, it's your takedown, with Burnout's banner (SLAM,
+  SHUNT, T-BONE, VERTICAL, ROADBLOCK, DOUBLE / TRIPLE TAKEDOWN), a sound and
+  half a boost gauge (`@takedown_boost`).
+- **Hard hits take them down at once** (`@takedown_smash` 20 m/s closing
+  speed), parked roadblock cars included. Taken-down cars are thrown clear
+  of your path (`@takedown_launch`) and blow up (`@takedown_explode`).
+- **Any vehicle can be taken down**, not only police (`@takedown_any`).
+- **Police can take you down too:** a wreck right after a police car hit you
+  is TAKEN DOWN and costs a quarter of the gauge (`@taken_down_boost`).
+- **Five police takedowns in one chase and you escape:** YOU ESCAPED!, wanted
+  level gone (`@chase_takedowns`).
+- **Your car stays straight while ramming:** it can't be spun, and keeps
+  pointing and moving the way it was going; steering still turns it, and
+  the ram's slowdown stays (`@takedown_straight`, `@takedown_keep`).
+- Ramming from behind or alongside never wrecks you (head-ons still can),
+  and you're never thrown through the windscreen near police.
+
+## Police
+
+- **They come for you:** police cars near you go for a PIT from behind or a
+  slam from alongside, and oncoming ones steer into you for a head-on
+  (`@police_ram` 12 m/s, `@police_ram_oncoming`, `@police_rammers` 4).
+- **They keep up:** no more spinning out at speed (`@police_grip`), more pull
+  when they speed up (`@police_accel`) and 3× brakes (`@police_brakes`).
+  Flipped or stuck police cars are put back on the nearest road facing you.
+- **Harder to lose:** while a police car is within 400 m it knows where you
+  are, seen or not (`@police_sight`).
+- **They only break when you break them:** police cars can't be damaged
+  until your car hits them (`@police_tough`).
+- The police car that took you down is left in place by the wreck clear-up.
+
+## Around Paradise City
+
+- **Burnout's drive-thrus, with map blips:**
+  - **Auto Repair:** fixes your car.
+  - **Gas Station:** fills the boost gauge.
+  - **Paint Shop:** resprays the car in random colours, as in Burnout.
+  - **Junkyard:** stops you and opens a menu. **Modify Vehicle**: respray
+    (19 colours plus the factory paint, and finishes), wheels and rims,
+    every body and performance part the car has, window tint, plate,
+    livery, turbo and xenons. **Select a New Car**: any of GTA's road
+    vehicles by class (776 in the current Legacy version), shown on a
+    turntable in the junkyard's display lot with bars for top speed,
+    acceleration, braking and traction; Enter and you drive it away. Not
+    while wanted.
+  - `@shops` (on).
+- **GTA's missions are gone:** story missions, side activities, random
+  events and their map blips are stopped and hidden, since their places
+  were in Los Santos (`@gta_missions` off).
+
+## Radar, pause map and GPS
+
+- **The radar and pause map show Paradise City:** roads, buildings,
+  railways, lakes and the coast, built from Burnout's map. The coast is
+  hand-traced, including Silver Lake and Big Surf Island.
+- **GPS routes over Paradise roads:** set a waypoint and the route is drawn
+  on the radar, rerouting when you leave it.
+
+## Driving
+
+- **Grinding:** scraping along a wall, barrier or car at speed barely slows
+  or damages your car, throws sparks, and is never a crash (`@grind`,
+  `@grind_speed`, `@grind_drag`, `@grind_damage`, `@grind_sparks`).
+- **Prop hits can't spin the car:** for a moment it keeps turning the way it
+  was, so going straight stays straight and a drift carries on
+  (`@prop_straight`).
+- **Tyres sink into kerbs** instead of the whole car being lifted over them,
+  which smooths out handling at speed (`@tyres_clip` *(setup)*).
+- The camera no longer zooms in when a knocked prop passes through the car.
+
+## Traffic
+
+- **Burnout's traffic lights work:** the 135 light-controlled junctions
+  cycle on Burnout's timings, cars stop at red, queue and go on green, and
+  the overhead lights with no GTA model light up (`@junctions`,
+  `@light_time`, `@light_lamps`, `@light_hold`).
+- **Give way at junctions without lights:** cars wait while another crosses
+  their path (`@give_way`).
+- **No more gridlock:** a car stuck in a junction for 10 s out of your sight
+  is removed (`@unjam`).
+
+## Map
+
+- **Distant scenery:** Burnout's background mountains and its low-detail
+  model of every part of the city, so the skyline and hills show from far
+  away and swap to full detail as you get closer.
+- **Builds from Burnout with the OTN mod installed:** its changed and new
+  areas, props and textures convert too, and generated collision that would
+  clash with OTN's new pieces is left out.
+- **Texture fixes:** road markings on tunnel, Big Surf and bridge roads,
+  white lawns and planters on OTN, and power and tram cables are black
+  instead of white.
+- 572 more flooded water squares removed (2,667 in all), 16 more collision
+  fixes (940), 8 more sidewalk fixes and 6 more parked vehicles.
+
+## Setup
+
+- **Map choice:** Paradise City, or GTA's own Los Santos with only the
+  Burnout driving. Run the setup again and pick the other map to switch
+  (`@mode` now shows which is installed; `@mode off` no longer gives
+  normal GTA back).
+- New steps for the radar and map, the drive-thrus and the junkyard's car
+  list. A Burnout folder with a mod installed in it is detected and rebuilt.
+- The map viewer and editors are no longer in this repository: they're now
+  a separate desktop app, Paradise Viewer.
+
+## Upgrading from v0.2.1
+
+Run the new setup over your install. Your settings keep their values and
+the new ones are added with their defaults. Most of the conversion runs
+again, so expect about as long as a first install.
+
+---
+
 # GTA Paradise v0.2.1
 
 A patch: flying through the windscreen in wrecks, a better brake-to-drift,

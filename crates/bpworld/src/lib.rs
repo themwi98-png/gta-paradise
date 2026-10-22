@@ -151,6 +151,7 @@ impl CollisionTag {
     }
 }
 
+mod shader_roles;
 pub mod traffic;
 
 pub mod types {
@@ -347,16 +348,30 @@ pub fn parse_renderable(r: &Res) -> Result<Renderable> {
 /// 0x6A640902 diffuse, 0xC6BA11F3 diffuse (road detail-map shaders),
 /// 0xFB9B1028 detail map, 0x610F08DB specular, 0x61D1EACC illuminance map,
 /// 0xD0F65026 reflection cube map.
+///
+/// A modded map's rebuilt bundles can have the role hashes zeroed (and the
+/// records reordered): those are filled in from the material's shader by the
+/// slot number at +0x8 (shader_roles.rs).
 pub fn material_samplers(r: &Res) -> Vec<(u32, Option<u64>)> {
     if r.main.len() < 0x10 {
         return Vec::new();
     }
     let n = r.u8(0x9) as usize;
     let base = r.u32(0xC) as usize;
+    let roles = material_shader(r).and_then(|id| shader_roles::SHADER_SLOT_ROLES.iter().find(|(s, _)| *s == id)).map(|(_, r)| *r);
     (0..n)
         .filter_map(|i| {
             let o = base + i * 0x14;
-            (o + 0x14 <= r.main.len()).then(|| (r.u32(o + 4), r.import(o + 0x10)))
+            if o + 0x14 > r.main.len() {
+                return None;
+            }
+            // Zeroed: the role of the shader slot this sampler binds (its
+            // number at +0x8; the order of the records can differ).
+            let role = match r.u32(o + 4) {
+                0 => roles.and_then(|l| l.iter().find(|(slot, _)| *slot == r.u32(o + 8))).map_or(0, |(_, role)| *role),
+                h => h,
+            };
+            Some((role, r.import(o + 0x10)))
         })
         .collect()
 }

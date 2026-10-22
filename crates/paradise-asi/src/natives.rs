@@ -109,12 +109,20 @@ pub fn raycast(from: Vec3, to: Vec3, flags: i32, ignore: i32) -> Option<RayHit> 
 
 /// Draws one line of text in screen space (0..1); `scale` ~0.35 is small.
 pub fn draw_text(text: &str, x: f32, y: f32, scale: f32, rgba: [i32; 4]) {
+    draw_text_outlined(text, x, y, scale, rgba, true);
+}
+
+/// draw_text, with or without the dark outline (none for dark text on a
+/// light background).
+pub fn draw_text_outlined(text: &str, x: f32, y: f32, scale: f32, rgba: [i32; 4], outline: bool) {
     let entry = CString::new("STRING").unwrap();
     let body = CString::new(text.replace('\0', "")).unwrap();
     call(0x66E0276CC5F6B9DA, args!(4)); // SET_TEXT_FONT (4 = condensed)
     call(0x07C837F9A01C34C9, args!(scale, scale)); // SET_TEXT_SCALE
     call(0xBE6B23FFA53FB442, args!(rgba[0], rgba[1], rgba[2], rgba[3])); // SET_TEXT_COLOUR
-    call(0x2513DFB0FB8400FE, &[]); // SET_TEXT_OUTLINE
+    if outline {
+        call(0x2513DFB0FB8400FE, &[]); // SET_TEXT_OUTLINE
+    }
     call(0x25FBB336DF1804CB, args!(entry.as_ptr())); // BEGIN_TEXT_COMMAND_DISPLAY_TEXT
     call(0x6C188BE134E074AA, args!(body.as_ptr())); // ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME
     call(0xCD015E5BB0D96A57, args!(x, y, 0)); // END_TEXT_COMMAND_DISPLAY_TEXT
@@ -392,6 +400,9 @@ pub struct VehicleLook {
     mods: Vec<(i32, i32, bool)>,
     toggles: Vec<i32>,
     plate: Option<CString>,
+    /// Custom (junkyard respray) primary and secondary colours.
+    custom: [Option<[i32; 3]>; 2],
+    finish: i32,
 }
 
 pub fn vehicle_look(v: i32) -> VehicleLook {
@@ -418,6 +429,8 @@ pub fn vehicle_look(v: i32) -> VehicleLook {
     if !plate.is_null() {
         l.plate = Some(unsafe { std::ffi::CStr::from_ptr(plate) }.to_owned());
     }
+    l.custom = [custom_colour(v, false), custom_colour(v, true)];
+    l.finish = paint_finish(v);
     l
 }
 
@@ -432,6 +445,12 @@ pub fn apply_vehicle_look(v: i32, l: &VehicleLook) {
     }
     call(0x4F1D4BE3A7F24601, args!(v, l.colours[0], l.colours[1]));
     call(0x2036F561ADD12E33, args!(v, l.colours[2], l.colours[3]));
+    set_paint_finish(v, l.finish);
+    for (secondary, c) in [(false, l.custom[0]), (true, l.custom[1])] {
+        if c.is_some() {
+            set_custom_colour(v, secondary, c);
+        }
+    }
     if l.livery >= 0 {
         call(0x60BF608F1B8CD1B6, args!(v, l.livery));
     }
@@ -613,6 +632,13 @@ pub fn set_driver_racing_modifier(ped: i32, v: f32) {
     call(0xDED5AF5A0EA4B297, args!(ped, v));
 }
 
+/// SET_DRIVE_TASK_CRUISE_SPEED and SET_DRIVE_TASK_MAX_CRUISE_SPEED (m/s) for
+/// the driver's current drive task.
+pub fn set_drive_task_cruise_speed(driver: i32, speed: f32) {
+    call(0x404A5AA9B9F0B746, args!(driver, speed, true));
+    call(0x5C9B84BD7D31D908, args!(driver, speed));
+}
+
 /// MODIFY_VEHICLE_TOP_SPEED: percentage added to the top speed.
 pub fn modify_vehicle_top_speed(vehicle: i32, percent: f32) {
     call(0x93A3996368C94158, args!(vehicle, percent));
@@ -632,9 +658,10 @@ pub fn are_nodes_loaded_for_area(x1: f32, y1: f32, x2: f32, y2: f32) -> bool {
     ret_bool(call(0xF7B79A50B905A30D, args!(x1, y1, x2, y2)))
 }
 
-/// HAS_ENTITY_CLEAR_LOS_TO_ENTITY (trace type 17, as Rockstar's scripts).
-pub fn has_clear_los(a: i32, b: i32) -> bool {
-    ret_bool(call(0xFCDFF7B72D23A1AC, args!(a, b, 17)))
+/// UPDATE_WANTED_POSITION_THIS_FRAME: the police's idea of where the
+/// player is becomes where they are now.
+pub fn update_wanted_position_this_frame(player: i32) {
+    call(0xBC9490CA15AEA8FB, args!(player));
 }
 
 /// REPORT_POLICE_SPOTTED_PLAYER
@@ -669,14 +696,6 @@ pub fn set_ped_seeing_range(ped: i32, range: f32) {
 
 // ---- Startup and damage ----
 
-
-
-
-
-
-
-
-
 pub fn is_player_switch_in_progress() -> bool {
     ret_bool(call(0xD9D2CFFF49FAB35F, &[]))
 }
@@ -705,7 +724,6 @@ pub fn set_vehicle_body_health(vehicle: i32, v: f32) {
     call(0xB77D05AC8C78AADB, args!(vehicle, v));
 }
 
-
 /// GET_CONTROL_NORMAL (pad 0), e.g. 71 = accelerate.
 pub fn get_control_normal(action: i32) -> f32 {
     ret_f32(call(0xEC3C9B8D5327B563, args!(0, action)))
@@ -719,7 +737,6 @@ pub fn set_vehicle_strong(vehicle: i32, on: bool) {
 pub fn set_vehicle_can_be_visibly_damaged(vehicle: i32, on: bool) {
     call(0x4C7028F78FFD3681, args!(vehicle, on));
 }
-
 
 /// GET_CLOSEST_OBJECT_OF_TYPE (0 if none).
 pub fn get_closest_object_of_type(p: Vec3, radius: f32, model: u32) -> i32 {
@@ -879,7 +896,6 @@ pub fn get_disabled_control_normal(action: i32) -> f32 {
     ret_f32(call(0x11E65974A982637C, args!(0, action)))
 }
 
-
 // ---- Drivability damage ----
 
 /// GET_WORLD_POSITION_OF_ENTITY_BONE
@@ -945,4 +961,449 @@ pub fn is_model_in_cdimage(model: u32) -> bool {
 
 pub fn is_model_a_vehicle(model: u32) -> bool {
     ret_bool(call(0x19AAC8F07BFEC53E, args!(model)))
+}
+
+pub fn is_waypoint_active() -> bool {
+    ret_bool(call(0x1DD1F58F493F1DA5, &[]))
+}
+
+pub fn first_blip_info_id(sprite: i32) -> i32 {
+    ret_i32(call(0x1BEDE233E6CD2A1F, args!(sprite)))
+}
+
+pub fn blip_info_coords(blip: i32) -> Vec3 {
+    unsafe { *(call(0xFA7C7F0AADF25D09, args!(blip)) as *const Vec3) }
+}
+
+/// SET_VEHICLE_OUT_OF_CONTROL: its driver stops driving it (a takedown).
+pub fn set_vehicle_out_of_control(vehicle: i32, kill_driver: bool, explode_on_impact: bool) {
+    call(0xF19D095E42D430CC, args!(vehicle, kill_driver, explode_on_impact));
+}
+
+/// SET_ENTITY_PROOFS with only fire, explosion and collision set.
+pub fn set_entity_proofs(entity: i32, fire: bool, explosion: bool, collision: bool) {
+    call(0xFAEE099C6F890BB8, args!(entity, false, fire, explosion, collision, false, false, false, false));
+}
+
+/// Like draw_text, centred on `x`.
+pub fn draw_text_centred(text: &str, x: f32, y: f32, scale: f32, rgba: [i32; 4]) {
+    call(0xC02F4DBFB51D988B, args!(true)); // SET_TEXT_CENTRE
+    draw_text(text, x, y, scale, rgba);
+}
+
+/// CLEAR_PLAYER_WANTED_LEVEL
+pub fn clear_player_wanted_level(player: i32) {
+    call(0xB302540597885499, args!(player));
+}
+
+// ---- Junctions ----
+
+/// BRING_VEHICLE_TO_HALT: the vehicle brakes to a stop within `distance` m
+/// and stays stopped for `duration` (its driver's own driving pauses).
+pub fn bring_vehicle_to_halt(vehicle: i32, distance: f32, duration: i32) {
+    call(0x260BE8F09E326A20, args!(vehicle, distance, duration, false));
+}
+
+/// STOP_BRINGING_VEHICLE_TO_HALT
+pub fn stop_bringing_vehicle_to_halt(vehicle: i32) {
+    call(0x7C06330BFDDA182E, args!(vehicle));
+}
+
+/// IS_VEHICLE_BEING_BROUGHT_TO_HALT
+pub fn is_vehicle_being_brought_to_halt(vehicle: i32) -> bool {
+    ret_bool(call(0xC69BB1D832A710EF, args!(vehicle)))
+}
+
+/// SET_VEHICLE_MAX_SPEED (0 or less: no limit again).
+pub fn set_vehicle_max_speed(vehicle: i32, speed: f32) {
+    call(0xBAA045B4E42F3C06, args!(vehicle, speed));
+}
+
+/// SET_VEHICLE_BRAKE_LIGHTS (this frame).
+pub fn set_vehicle_brake_lights(vehicle: i32, on: bool) {
+    call(0x92B35082E0B42F66, args!(vehicle, on));
+}
+
+/// SET_ENTITY_TRAFFICLIGHT_OVERRIDE: 0 green, 1 red, 2 amber, 3 back to normal.
+pub fn set_entity_trafficlight_override(entity: i32, state: i32) {
+    call(0x57C5DB656185EAC4, args!(entity, state));
+}
+
+pub fn is_vehicle_siren_on(vehicle: i32) -> bool {
+    ret_bool(call(0x4C9BF537BE2634B2, args!(vehicle)))
+}
+
+/// IS_ENTITY_ON_SCREEN (in view, even behind a wall).
+pub fn is_entity_on_screen(entity: i32) -> bool {
+    ret_bool(call(0xE659E47AF827484B, args!(entity)))
+}
+
+/// DRAW_MARKER: a marker of `kind` (28 = sphere) this frame.
+pub fn draw_marker(kind: i32, p: Vec3, scale: f32, rgba: [i32; 4]) {
+    let none = std::ptr::null::<std::ffi::c_char>();
+    call(
+        0x28477EC23D892089,
+        args!(kind, p.x, p.y, p.z, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, scale, scale, scale, rgba[0], rgba[1], rgba[2], rgba[3], false, false, 2, false, none, none, false),
+    );
+}
+
+/// DRAW_LIGHT_WITH_RANGE: a point light this frame.
+pub fn draw_light_with_range(p: Vec3, rgb: [i32; 3], range: f32, intensity: f32) {
+    call(0xF2A1B2771A01DBD4, args!(p.x, p.y, p.z, rgb[0], rgb[1], rgb[2], range, intensity));
+}
+
+// ---- GTA's missions and blips ----
+
+pub fn script_thread_iterator_reset() {
+    call(0xDADFADA5A20143A8, &[]);
+}
+
+/// SCRIPT_THREAD_ITERATOR_GET_NEXT_THREAD_ID: 0 when there are no more.
+pub fn script_thread_next() -> i32 {
+    ret_i32(call(0x30B4FA1C82DD4B9F, &[]))
+}
+
+/// GET_NAME_OF_SCRIPT_WITH_THIS_ID
+pub fn script_name(thread: i32) -> Option<String> {
+    c_str(call(0x05A42BA9FC8DA96B, args!(thread)))
+}
+
+pub fn terminate_thread(thread: i32) {
+    call(0xC8B189ED9138BCD4, args!(thread));
+}
+
+pub fn next_blip_info_id(sprite: i32) -> i32 {
+    ret_i32(call(0x14F96AA50D6FBEA7, args!(sprite)))
+}
+
+pub fn does_blip_exist(blip: i32) -> bool {
+    ret_bool(call(0xA6DB27D19ECBB7DA, args!(blip)))
+}
+
+/// GET_BLIP_INFO_ID_TYPE: 1 vehicle, 2 ped, 3 object, 4 coord, 6 pickup, 7 radius.
+pub fn blip_info_type(blip: i32) -> i32 {
+    ret_i32(call(0xBE9B0959FFD0779B, args!(blip)))
+}
+
+/// GET_BLIP_INFO_ID_DISPLAY (0 hidden).
+pub fn blip_display(blip: i32) -> i32 {
+    ret_i32(call(0x1E314167F701DC3B, args!(blip)))
+}
+
+/// SET_BLIP_DISPLAY (0 hidden, 2 map and radar, ...).
+pub fn set_blip_display(blip: i32, display: i32) {
+    call(0x9029B2F3DA924928, args!(blip, display));
+}
+
+pub fn add_blip_for_coord(p: Vec3) -> i32 {
+    ret_i32(call(0x5A039BB0BCA604B6, args!(p.x, p.y, p.z)))
+}
+
+pub fn set_blip_sprite(blip: i32, sprite: i32) {
+    call(0xDF735600A4696DAF, args!(blip, sprite));
+}
+
+/// On the radar only when near (always on the pause map).
+pub fn set_blip_as_short_range(blip: i32, on: bool) {
+    call(0xBE8BE4FE60E27B72, args!(blip, on));
+}
+
+/// The blip's name in the pause map legend.
+pub fn set_blip_name(blip: i32, name: &str) {
+    let (entry, body) = (CString::new("STRING").unwrap(), CString::new(name).unwrap());
+    call(0xF9113A30DE5C6670, args!(entry.as_ptr()));
+    call(0x6C188BE134E074AA, args!(body.as_ptr()));
+    call(0xBC38B49BCB83BC9B, args!(blip));
+}
+
+pub fn remove_blip(blip: i32) {
+    let mut b = blip;
+    call(0x86A652570E5F25DD, args!(&mut b as *mut i32));
+}
+
+// ---- Shops ----
+
+/// SET_VEHICLE_FIXED, SET_VEHICLE_DEFORMATION_FIXED and a wash: as new.
+pub fn repair_vehicle(vehicle: i32) {
+    call(0x115722B1B9C14C1C, args!(vehicle));
+    call(0x953DA1E1B12C0491, args!(vehicle));
+    call(0x79D3B596FE44EE8B, args!(vehicle, 0.0f32));
+}
+
+pub fn set_vehicle_mod_kit(vehicle: i32) {
+    call(0x1F2AA07F00B3217A, args!(vehicle, 0));
+}
+
+pub fn num_vehicle_mods(vehicle: i32, kind: i32) -> i32 {
+    ret_i32(call(0xE38E9162A2500646, args!(vehicle, kind)))
+}
+
+/// GET_VEHICLE_MOD: -1 for stock.
+pub fn vehicle_mod(vehicle: i32, kind: i32) -> i32 {
+    ret_i32(call(0x772960298DA26FDB, args!(vehicle, kind)))
+}
+
+/// SET_VEHICLE_MOD; -1 is back to stock (REMOVE_VEHICLE_MOD).
+pub fn set_vehicle_mod(vehicle: i32, kind: i32, index: i32) {
+    if index < 0 {
+        call(0x92D619E420858204, args!(vehicle, kind));
+    } else {
+        call(0x6AF0636DDEDCB6DD, args!(vehicle, kind, index, false));
+    }
+}
+
+/// A returned C string, if not null or empty.
+fn c_str(p: *mut u64) -> Option<String> {
+    let p = unsafe { *(p as *const *const std::ffi::c_char) };
+    if p.is_null() {
+        return None;
+    }
+    let s = unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned();
+    (!s.is_empty()).then_some(s)
+}
+
+/// The game's text for a text label (GET_FILENAME_FOR_AUDIO_CONVERSATION,
+/// the old _GET_LABEL_TEXT), if it has one.
+pub fn label_text(label: &str) -> Option<String> {
+    let c = CString::new(label).ok()?;
+    if !ret_bool(call(0xAC09CA973C564252, args!(c.as_ptr()))) {
+        return None; // DOES_TEXT_LABEL_EXIST
+    }
+    c_str(call(0x7B5280EBA9840C72, args!(c.as_ptr())))
+}
+
+/// A mod option's name (GET_MOD_TEXT_LABEL, then its text).
+pub fn mod_name(vehicle: i32, kind: i32, index: i32) -> Option<String> {
+    label_text(&c_str(call(0x8935624F8C5592CC, args!(vehicle, kind, index)))?)
+}
+
+/// The vehicle's own name for a mod slot (GET_MOD_SLOT_NAME), if it has one.
+pub fn mod_slot_name(vehicle: i32, kind: i32) -> Option<String> {
+    let label = c_str(call(0x51F0FEB9F6AE98C0, args!(vehicle, kind)))?;
+    label_text(&label).or(Some(label))
+}
+
+pub fn toggle_vehicle_mod(vehicle: i32, kind: i32, on: bool) {
+    call(0x2A1F4F37F95BAD08, args!(vehicle, kind, on));
+}
+
+pub fn is_toggle_mod_on(vehicle: i32, kind: i32) -> bool {
+    ret_bool(call(0x84B233A8C8FC8AE7, args!(vehicle, kind)))
+}
+
+pub fn vehicle_wheel_type(vehicle: i32) -> i32 {
+    ret_i32(call(0xB3ED1BFB4BE636DC, args!(vehicle)))
+}
+
+pub fn set_vehicle_wheel_type(vehicle: i32, kind: i32) {
+    call(0x487EB21CC7295BA1, args!(vehicle, kind));
+}
+
+pub fn vehicle_window_tint(vehicle: i32) -> i32 {
+    ret_i32(call(0x0EE21293DAD47C95, args!(vehicle)))
+}
+
+pub fn set_vehicle_window_tint(vehicle: i32, tint: i32) {
+    call(0x57C51E6BAD752696, args!(vehicle, tint));
+}
+
+pub fn plate_style(vehicle: i32) -> i32 {
+    ret_i32(call(0xF11BC2DD9A3E7195, args!(vehicle)))
+}
+
+pub fn set_plate_style(vehicle: i32, style: i32) {
+    call(0x9088EB5A43FFB0A1, args!(vehicle, style));
+}
+
+pub fn livery_count(vehicle: i32) -> i32 {
+    ret_i32(call(0x87B63E25A529D526, args!(vehicle)))
+}
+
+pub fn livery(vehicle: i32) -> i32 {
+    ret_i32(call(0x2BB9230590DA5E8A, args!(vehicle)))
+}
+
+pub fn set_livery(vehicle: i32, livery: i32) {
+    call(0x60BF608F1B8CD1B6, args!(vehicle, livery));
+}
+
+/// SET_VEHICLE_CUSTOM_PRIMARY_COLOUR / _SECONDARY_; None goes back to the
+/// palette colour (CLEAR_VEHICLE_CUSTOM_..._COLOUR).
+pub fn set_custom_colour(vehicle: i32, secondary: bool, rgb: Option<[i32; 3]>) {
+    match (secondary, rgb) {
+        (false, Some(c)) => call(0x7141766F91D15BEA, args!(vehicle, c[0], c[1], c[2])),
+        (true, Some(c)) => call(0x36CED73BFED89754, args!(vehicle, c[0], c[1], c[2])),
+        (false, None) => call(0x55E1D2758F34E437, args!(vehicle)),
+        (true, None) => call(0x5FFBDEEC3E8E2009, args!(vehicle)),
+    };
+}
+
+pub fn custom_colour(vehicle: i32, secondary: bool) -> Option<[i32; 3]> {
+    let (is, get) = if secondary { (0x910A32E7AAD2656C, 0x8389CD56CA8072DC) } else { (0xF095C0405307B21B, 0xB64CF2CCA9D95F52) };
+    if !ret_bool(call(is, args!(vehicle))) {
+        return None;
+    }
+    let mut c = [0i32; 3];
+    let [r, g, b] = &mut c;
+    call(get, args!(vehicle, r as *mut i32, g as *mut i32, b as *mut i32));
+    Some(c)
+}
+
+/// The primary paint's finish (GET_VEHICLE_MOD_COLOR_1's paint type: 0
+/// normal, 1 metallic, 2 pearlescent, 3 matte, 4 metal, 5 chrome).
+pub fn paint_finish(vehicle: i32) -> i32 {
+    let (mut kind, mut colour, mut pearl) = (0i32, 0i32, 0i32);
+    call(0xE8D65CA700C9A693, args!(vehicle, &mut kind as *mut i32, &mut colour as *mut i32, &mut pearl as *mut i32));
+    kind
+}
+
+/// SET_VEHICLE_MOD_COLOR_1, keeping the colour it has.
+pub fn set_paint_finish(vehicle: i32, finish: i32) {
+    let (mut kind, mut colour, mut pearl) = (0i32, 0i32, 0i32);
+    call(0xE8D65CA700C9A693, args!(vehicle, &mut kind as *mut i32, &mut colour as *mut i32, &mut pearl as *mut i32));
+    call(0x43FEB945EE7F85B8, args!(vehicle, finish, colour, pearl));
+}
+
+/// DISABLE_ALL_CONTROL_ACTIONS (pad 0) for this frame.
+pub fn disable_all_controls() {
+    call(0x5F4B6931816E599B, args!(0));
+}
+
+/// ENABLE_CONTROL_ACTION (pad 0) for this frame.
+pub fn enable_control(action: i32) {
+    call(0x351220255D64C155, args!(0, action, true));
+}
+
+/// IS_DISABLED_CONTROL_JUST_PRESSED (pad 0)
+pub fn is_disabled_control_just_pressed(action: i32) -> bool {
+    ret_bool(call(0x91AEF906BCA88877, args!(0, action)))
+}
+
+/// GET_VEHICLE_CLASS_FROM_NAME (as GET_VEHICLE_CLASS, from the model).
+pub fn vehicle_class_from_name(model: u32) -> i32 {
+    ret_i32(call(0xDEDF1C8BD47C2200, args!(model)))
+}
+
+/// A vehicle model's name in the game ("Adder"), from its display name label.
+pub fn display_name(model: u32) -> Option<String> {
+    label_text(&c_str(call(0xB215AAC32D25D019, args!(model)))?)
+}
+
+/// A vehicle model's maker ("Truffade"), from its make name label.
+pub fn make_name(model: u32) -> Option<String> {
+    label_text(&c_str(call(0xF7AF4F159FF99F97, args!(model)))?)
+}
+
+/// A vehicle model's stock performance, as GTA's own stat bars use it:
+/// GET_VEHICLE_MODEL_ESTIMATED_MAX_SPEED (m/s), _ACCELERATION,
+/// _MAX_BRAKING and _MAX_TRACTION.
+pub fn model_performance(model: u32) -> [f32; 4] {
+    [
+        ret_f32(call(0xF417C2502FFFED43, args!(model))),
+        ret_f32(call(0x8C044C5C84505B6A, args!(model))),
+        ret_f32(call(0xDC53FD41B4ED944C, args!(model))),
+        ret_f32(call(0x539DE94D44FDFD0D, args!(model))),
+    ]
+}
+
+/// SET_ENTITY_VISIBLE
+pub fn set_entity_visible(entity: i32, on: bool) {
+    call(0xEA1C610A04DB6BBB, args!(entity, on, false));
+}
+
+/// SET_ENTITY_COLLISION (keeping physics).
+pub fn set_entity_collision(entity: i32, on: bool) {
+    call(0x1A9205C1B9EE827F, args!(entity, on, true));
+}
+
+/// GET_MODEL_DIMENSIONS: the model's bounding box (min, max).
+pub fn model_dimensions(model: u32) -> (Vec3, Vec3) {
+    let (mut lo, mut hi) = (Vec3::default(), Vec3::default());
+    call(0x03E8D3D5F549087A, args!(model, &mut lo as *mut Vec3, &mut hi as *mut Vec3));
+    (lo, hi)
+}
+
+/// GET_VEHICLE_COLOURS: (primary, secondary) palette indices.
+pub fn vehicle_colours(vehicle: i32) -> (i32, i32) {
+    let (mut a, mut b) = (0i32, 0i32);
+    call(0xA19435F193E081AC, args!(vehicle, &mut a as *mut i32, &mut b as *mut i32));
+    (a, b)
+}
+
+pub fn set_vehicle_colours(vehicle: i32, primary: i32, secondary: i32) {
+    call(0x4F1D4BE3A7F24601, args!(vehicle, primary, secondary));
+}
+
+/// GET_VEHICLE_EXTRA_COLOURS: (pearlescent, wheel) palette indices.
+pub fn vehicle_extra_colours(vehicle: i32) -> (i32, i32) {
+    let (mut a, mut b) = (0i32, 0i32);
+    call(0x3BC4245933A166F7, args!(vehicle, &mut a as *mut i32, &mut b as *mut i32));
+    (a, b)
+}
+
+pub fn set_vehicle_extra_colours(vehicle: i32, pearlescent: i32, wheel: i32) {
+    call(0x2036F561ADD12E33, args!(vehicle, pearlescent, wheel));
+}
+
+/// One-shot particle effect at a point (from `asset`), turned `heading`
+/// degrees about the up axis.
+pub fn ptfx_at(asset: &str, effect: &str, p: Vec3, heading: f32, scale: f32) {
+    let a = CString::new(asset).unwrap();
+    let e = CString::new(effect).unwrap();
+    call(0x6C38AF3693A69A91, args!(a.as_ptr())); // USE_PARTICLE_FX_ASSET
+    call(0x25129531F77B9ED3, args!(e.as_ptr(), p.x, p.y, p.z, 0.0f32, 0.0f32, heading, scale, false, false, false));
+}
+
+/// START_PARTICLE_FX_LOOPED_ON_ENTITY (from `asset`), at an offset in the
+/// entity's own frame; the effect's handle (0: none).
+pub fn ptfx_looped_on_entity(asset: &str, effect: &str, entity: i32, offset: Vec3, scale: f32) -> i32 {
+    let a = CString::new(asset).unwrap();
+    let e = CString::new(effect).unwrap();
+    call(0x6C38AF3693A69A91, args!(a.as_ptr())); // USE_PARTICLE_FX_ASSET
+    ret_i32(call(0x1AE42C1660FD6517, args!(e.as_ptr(), entity, offset.x, offset.y, offset.z, 0.0f32, 0.0f32, 0.0f32, scale, false, false, false)))
+}
+
+/// SET_PARTICLE_FX_LOOPED_EVOLUTION
+pub fn set_ptfx_evolution(handle: i32, name: &str, amount: f32) {
+    let c = CString::new(name).unwrap();
+    call(0x5F0C4B5B1C393BE2, args!(handle, c.as_ptr(), amount, false));
+}
+
+/// SET_PARTICLE_FX_LOOPED_OFFSETS (no rotation).
+pub fn set_ptfx_offset(handle: i32, offset: Vec3) {
+    call(0xF7DDEBEC43483C43, args!(handle, offset.x, offset.y, offset.z, 0.0f32, 0.0f32, 0.0f32));
+}
+
+pub fn does_ptfx_exist(handle: i32) -> bool {
+    ret_bool(call(0x74AFEF0D2E1E409B, args!(handle)))
+}
+
+pub fn stop_ptfx(handle: i32) {
+    call(0x8F75998877616996, args!(handle, false));
+}
+
+/// The gameplay camera doesn't collide with `entity` this frame
+/// (DISABLE_CAM_COLLISION_FOR_OBJECT and
+/// SET_GAMEPLAY_CAM_IGNORE_ENTITY_COLLISION_THIS_UPDATE).
+pub fn camera_ignore(entity: i32) {
+    call(0x49482F9FCD825AAA, args!(entity));
+    call(0x2AED6301F67007D5, args!(entity));
+}
+
+// ---- GPS (our own route, drawn as a custom GPS route) ----
+
+/// START_GPS_CUSTOM_ROUTE, the points (straight lines between them), then
+/// SET_GPS_CUSTOM_ROUTE_RENDER; drawn on the radar and the pause map.
+pub fn gps_custom_route(hud_colour: i32, points: &[Vec3], radar_width: i32, map_width: i32) {
+    call(0xE6DE0561D9232A64, &[]); // CLEAR_GPS_CUSTOM_ROUTE
+    call(0xDB34E8D56FC13B08, args!(hud_colour, true, true));
+    for p in points {
+        call(0x311438A071DD9B1A, args!(p.x, p.y, p.z));
+    }
+    call(0x900086F371220B6F, args!(true, radar_width, map_width));
+}
+
+pub fn clear_gps_custom_route() {
+    call(0x900086F371220B6F, args!(false, 0, 0)); // SET_GPS_CUSTOM_ROUTE_RENDER
+    call(0xE6DE0561D9232A64, &[]);
 }

@@ -188,7 +188,21 @@ pub fn dump(game: &Path, out: &Path, placement: Placement) -> Result<()> {
     for v in parked.iter().take(3) {
         println!("  {:?} flow {} chance {} flags {:#x}", v.transform.map(|f| (f * 100.0).round() / 100.0), v.flow_type, v.exists_chance, v.flags);
     }
+    junction_stats(&t);
     Ok(())
+}
+
+/// Burnout's traffic light junctions in figures (bpx junctions.rs uses them).
+fn junction_stats(t: &Traffic) {
+    let junctions: Vec<_> = t.hulls.iter().flat_map(|h| &h.junctions).collect();
+    let stops: usize = t.hulls.iter().map(|h| h.stop_lines.len()).sum();
+    let mut states = [0usize; 17];
+    let mut sets = [0usize; 9];
+    for j in &junctions {
+        states[j.states.len()] += 1;
+        sets[j.controllers.len()] += 1;
+    }
+    println!("{} traffic light junctions, {stops} stop lines, {} lights; states per junction {states:?}, light sets per junction {sets:?}", junctions.len(), t.lights.len());
 }
 
 /// Parked-car ymaps cover tiles of this size (m) and stream in from this far
@@ -271,6 +285,9 @@ pub fn export_cargens(game: &Path, out_dir: &Path, placement: Placement, prefix:
 /// or run this far (m) since the last kept one.
 const NODE_TURN: f32 = 0.17;
 const NODE_SPACING: f32 = 25.0;
+/// Set Flags2's junction bit on nodes where 3+ roads meet (see write_ynds).
+const JUNCTION_FLAG: bool = false;
+
 /// GTA's path node grid: 32 x 32 areas of 512 m from (-8192, -8192).
 const AREA_SIZE: f32 = 512.0;
 const AREA_ORIGIN: f32 = -8192.0;
@@ -458,7 +475,11 @@ pub fn export(game: &Path, out_dir: &Path, placement: Placement) -> Result<()> {
 /// Writes one ynd XML per GTA path area (all 1024, empty where there is no
 /// road, so the Los Santos nodes are replaced). `links[i]` lists (to, lanes
 /// from i towards `to`, lanes back); `density` is GTA's 0-15 traffic density
-/// per node. Nodes without links are dropped.
+/// per node. Nodes without links are dropped. Also writes
+/// `paradise_roads.txt` there: the same road network for paradise.asi's own
+/// GPS route finding (gps.rs; GTA's GPS finds no route on these roads):
+/// `n x y z` per node (numbered from 0 in order), then `l from to` per link
+/// that can be driven from `from` to `to`.
 /// Returns (nodes written, areas used, most links on a node).
 fn write_ynds(node_pos: &[[f32; 3]], speed: &[f32], density: &[u8], links: &[Vec<(usize, u8, u8)>], out_dir: &Path) -> Result<(usize, usize, usize)> {
     // Areas and ids; nodes without links are dropped.
@@ -478,6 +499,7 @@ fn write_ynds(node_pos: &[[f32; 3]], speed: &[f32], density: &[u8], links: &[Vec
     anyhow::ensure!(max_links <= 31, "a path node has {max_links} links (GTA allows 31)");
 
     let dead = deadendness(links);
+    let along = road_distance(node_pos, links);
     std::fs::create_dir_all(out_dir)?;
     let mut total = 0;
     for (area, list) in area_nodes.iter().enumerate() {
@@ -494,21 +516,27 @@ fn write_ynds(node_pos: &[[f32; 3]], speed: &[f32], density: &[u8], links: &[Vec
             for (k, &i) in list.iter().enumerate() {
                 let p = node_pos[i];
                 let class = speed_class(speed[i]);
-                // Flags0 2: GPS enabled; Flags2 4: junction (3+ roads meet;
-                // set on most of Los Santos' junction nodes and no others),
-                // 64: highway; Flags4 bits 0-3: density, bits 4-6: how deep
-                // in a dead end (as in Los Santos, so routes avoid them);
-                // Flags5 bits 1-2: speed class.
+                // Flags0 2, as on Los Santos' roads that are on (bit 0 only
+                // ever comes with switched-off ones); Flags2 4: junction (3+
+                // roads meet; set on most of Los Santos' junction nodes and
+                // no others), 64: highway; Flags3 bits 1-7: distance along
+                // the roads, mod 128 (see road_distance); Flags4 bits 0-3:
+                // density, bits 4-6: how deep in a dead end (as in Los
+                // Santos, so routes avoid them); Flags5 bits 1-2: speed class.
                 let highway = if class >= 3 { 64 } else { 0 };
-                let junction = if links[i].len() >= 3 { 4 } else { 0 };
+                // Los Santos' junction nodes also carry junction height data
+                // (a Junctions entry), which ours don't: flagged without it,
+                // the GPS may not route through them. Off while that's tested.
+                let junction = if JUNCTION_FLAG && links[i].len() >= 3 { 4 } else { 0 };
                 let flags4 = density[i].min(15) | (dead[i] << 4);
                 let _ = write!(
                     xml,
-                    "  <Item>\n   <AreaID value=\"{area}\" />\n   <NodeID value=\"{k}\" />\n   <StreetName />\n   <Position x=\"{}\" y=\"{}\" z=\"{}\" />\n   <Flags0 value=\"2\" />\n   <Flags1 value=\"0\" />\n   <Flags2 value=\"{}\" />\n   <Flags3 value=\"0\" />\n   <Flags4 value=\"{flags4}\" />\n   <Flags5 value=\"{}\" />\n   <Links>\n",
+                    "  <Item>\n   <AreaID value=\"{area}\" />\n   <NodeID value=\"{k}\" />\n   <StreetName />\n   <Position x=\"{}\" y=\"{}\" z=\"{}\" />\n   <Flags0 value=\"2\" />\n   <Flags1 value=\"0\" />\n   <Flags2 value=\"{}\" />\n   <Flags3 value=\"{}\" />\n   <Flags4 value=\"{flags4}\" />\n   <Flags5 value=\"{}\" />\n   <Links>\n",
                     p[0],
                     p[1],
                     p[2],
                     highway | junction,
+                    along[i] << 1,
                     class << 1
                 );
                 for &(to, lanes_to, lanes_from) in &links[i] {
@@ -530,7 +558,59 @@ fn write_ynds(node_pos: &[[f32; 3]], speed: &[f32], density: &[u8], links: &[Vec
         xml.push_str(" <Junctions />\n <JunctionRefs />\n</NodeDictionary>\n");
         std::fs::write(out_dir.join(format!("nodes{area}.ynd.xml")), xml)?;
     }
+    let mut roads = String::from("# road network for paradise.asi's GPS (bpx gta-paths): n x y z, then l from to (drivable that way)
+");
+    let mut number = vec![usize::MAX; node_pos.len()];
+    let mut count = 0;
+    for (i, p) in node_pos.iter().enumerate() {
+        if !links[i].is_empty() {
+            number[i] = count;
+            count += 1;
+            let _ = writeln!(roads, "n {:.1} {:.1} {:.1}", p[0], p[1], p[2]);
+        }
+    }
+    for (i, l) in links.iter().enumerate() {
+        for &(to, lanes_to, _) in l {
+            if lanes_to > 0 && number[i] != usize::MAX && number[to] != usize::MAX {
+                let _ = writeln!(roads, "l {} {}", number[i], number[to]);
+            }
+        }
+    }
+    std::fs::write(out_dir.join("paradise_roads.txt"), roads)?;
     Ok((total, area_nodes.iter().filter(|l| !l.is_empty()).count(), max_links))
+}
+
+/// Distance along the roads (m, mod 128) per node, for Flags3: in Los
+/// Santos, 94% of linked nodes differ by just their link's length (mod
+/// 128), as distances from a starting node along a tree of the network
+/// would. Here: shortest distances over the undirected road graph from the
+/// first node of each separate part.
+fn road_distance(pos: &[[f32; 3]], links: &[Vec<(usize, u8, u8)>]) -> Vec<u8> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    let len = |a: usize, b: usize| ((pos[a][0] - pos[b][0]).powi(2) + (pos[a][1] - pos[b][1]).powi(2) + (pos[a][2] - pos[b][2]).powi(2)).sqrt();
+    // In centimetres, so the heap orders whole numbers.
+    let mut dist: Vec<Option<u64>> = vec![None; pos.len()];
+    for root in 0..pos.len() {
+        if dist[root].is_some() || links[root].is_empty() {
+            continue;
+        }
+        dist[root] = Some(0);
+        let mut heap = BinaryHeap::from([Reverse((0u64, root))]);
+        while let Some(Reverse((d, a))) = heap.pop() {
+            if dist[a].is_some_and(|best| best < d) {
+                continue;
+            }
+            for &(b, _, _) in &links[a] {
+                let nd = d + (len(a, b) * 100.0).round() as u64;
+                if dist[b].is_none_or(|best| nd < best) {
+                    dist[b] = Some(nd);
+                    heap.push(Reverse((nd, b)));
+                }
+            }
+        }
+    }
+    dist.iter().map(|d| ((d.unwrap_or(0) as f64 / 100.0).round() as u64 % 128) as u8).collect()
 }
 
 /// Dead-end depth per node (0..7): nodes on a branch that leads nowhere,

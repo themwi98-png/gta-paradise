@@ -35,9 +35,26 @@
 //!   are removed and logged to `paradise_spawns.csv`.
 //! - Police chase recorder (`chase.rs`): pursuing police while wanted, once
 //!   a second, to `paradise_chase.csv`.
+//! - Burnout-style takedowns (`takedown.rs`): police cars rammed into a
+//!   crash are taken down (banner, boost, blown up); a police car's hit
+//!   before the player's own wreck makes it TAKEN DOWN. Settings:
+//!   `@takedown...`, `@taken_down_boost`.
+//! - Junctions (`junctions.rs`): Burnout's traffic lights run in GTA (their
+//!   light props switch, GTA's cars stop at red), cars give way at junctions
+//!   without lights, and cars stuck in a junction out of sight are removed.
+//!   Settings: `@junctions`, `@light_time`, `@light_lamps`, `@give_way`,
+//!   `@unjam`, `@light_hold`.
+//! - Grinding (`grind.rs`, `@grind...`): scraping along walls and cars at
+//!   speed barely slows or damages the car, and throws sparks.
 //! - Heavier jumps and downforce (`physics.rs`): airborne cars near the
 //!   player fall `@air_gravity` times faster than GTA's gravity; fast cars
 //!   on the ground are pressed down by `@downforce`.
+//! - No GTA missions (`missions.rs`, `@gta_missions off`): GTA's story
+//!   missions, side activities and random events are stopped and their map
+//!   blips hidden (their places are in the removed Los Santos).
+//! - Burnout's drive-thrus (`shops.rs`, `@shops`): junkyards open a
+//!   customisation menu, auto repairs fix the car, gas stations fill the
+//!   boost; each has a map blip.
 //! - F9 marks the current spot (F8 is Menyoo's menu key): appends position, heading and whether in a
 //!   vehicle to `paradise_marks.csv`, so a place can be pointed out exactly.
 //! - While in a vehicle, motion is sampled at ~20 Hz into
@@ -50,12 +67,18 @@ mod boost;
 mod perf;
 mod chase;
 mod drift;
+mod gps;
+mod grind;
+mod junctions;
+mod missions;
 mod natives;
 mod overlay;
 mod physics;
 mod propshield;
+mod shops;
 mod spawnguard;
 mod shv;
+mod takedown;
 mod wreck;
 
 use natives as n;
@@ -138,6 +161,13 @@ struct Settings {
     /// Amount of traffic, times normal (where it goes is set per road).
     traffic: f32,
     police: chase::PoliceSettings,
+    takedown: takedown::TakedownSettings,
+    grind: grind::GrindSettings,
+    junctions: junctions::JunctionSettings,
+    /// Keep GTA's missions, side activities and their blips (Paradise only).
+    gta_missions: bool,
+    /// Burnout's junkyards, auto repairs and gas stations.
+    shops: bool,
     /// Write the position probe and driving trace (debugging).
     debug_log: bool,
     /// Write the plugin's frame cost to paradise.log every 15 s.
@@ -146,13 +176,15 @@ struct Settings {
 
 fn load_settings() -> Settings {
     let text = std::fs::read_to_string("paradise.ini").unwrap_or_default();
-    let mut s = Settings { paradise: true, start: None, start_car: None, wreck: Default::default(), boost: Default::default(), air_gravity: 3.0, downforce: 0.75, drift: Default::default(), air: Default::default(), car_top: physics::BAKED_TOP, car_power: physics::BAKED_POWER, traffic: 1.0, police: Default::default(), debug_log: false, perf: true };
+    let mut s = Settings { paradise: true, start: None, start_car: None, wreck: Default::default(), boost: Default::default(), air_gravity: 3.0, downforce: 0.75, drift: Default::default(), air: Default::default(), car_top: physics::BAKED_TOP, car_power: physics::BAKED_POWER, traffic: 1.0, police: Default::default(), takedown: Default::default(), grind: Default::default(), junctions: Default::default(), gta_missions: false, shops: true, debug_log: false, perf: true };
     for line in text.lines() {
         let p: Vec<&str> = line.split_whitespace().collect();
         let on = |v: &str| !(v.eq_ignore_ascii_case("off") || v == "0" || v.eq_ignore_ascii_case("false"));
         let num = |v: &str, d: f32| v.parse::<f32>().unwrap_or(d);
         let w = &mut s.wreck;
         let b = &mut s.boost;
+        let t = &mut s.takedown;
+        let j = &mut s.junctions;
         match p.as_slice() {
             ["@boost", v, ..] => b.enabled = on(v),
             ["@boost_accel", v, ..] => b.accel = num(v, b.accel),
@@ -181,12 +213,15 @@ fn load_settings() -> Settings {
             ["@wreck_engine", v, ..] => w.engine_wreck = num(v, w.engine_wreck),
             ["@strong_axles", v, ..] => w.strong_axles = on(v),
             ["@prop_keep", v, ..] => w.prop_keep = num(v, w.prop_keep),
+            ["@prop_straight", v, ..] => w.prop_straight = on(v),
             ["@wreck_desat", v, ..] => w.desat = num(v, w.desat).clamp(0.0, 1.0),
             ["@wreck_clear", v, ..] => w.clear_radius = num(v, w.clear_radius).max(0.0),
             ["@wreck_crush", v, ..] => w.crush = num(v, w.crush),
             ["@wreck_crush_rounds", v, ..] => w.crush_rounds = num(v, w.crush_rounds as f32) as i32,
             ["@air_gravity", v, ..] => s.air_gravity = num(v, s.air_gravity),
             ["@debug_log", v, ..] => s.debug_log = on(v),
+            ["@gta_missions", v, ..] => s.gta_missions = on(v),
+            ["@shops", v, ..] => s.shops = on(v),
             ["@perf", v, ..] => s.perf = on(v),
             ["@air_control", v, ..] => s.air.control = num(v, s.air.control).clamp(0.0, 1.0),
             ["@barrel_roll", v, ..] => s.air.barrel_roll = on(v),
@@ -204,6 +239,36 @@ fn load_settings() -> Settings {
             ["@police_power", v, ..] => s.police.power = num(v, s.police.power),
             ["@police_top", v, ..] => s.police.top = num(v, s.police.top),
             ["@police_tough", v, ..] => s.police.tough = on(v),
+            ["@police_grip", v, ..] => s.police.grip = num(v, s.police.grip).clamp(0.0, 1.0),
+            ["@police_sight", v, ..] => s.police.sight = num(v, s.police.sight).clamp(0.0, 3000.0),
+            ["@police_accel", v, ..] => s.police.accel = num(v, s.police.accel).clamp(0.0, 5.0),
+            ["@police_brakes", v, ..] => s.police.brakes = num(v, s.police.brakes).clamp(1.0, 10.0),
+            ["@police_ram", v, ..] => s.police.ram = num(v, s.police.ram).clamp(0.0, 40.0),
+            ["@police_ram_oncoming", v, ..] => s.police.ram_oncoming = on(v),
+            ["@police_rammers", v, ..] => s.police.rammers = num(v, s.police.rammers as f32).clamp(0.0, 20.0) as usize,
+            ["@takedown_smash", v, ..] => t.smash = num(v, t.smash).clamp(0.0, 100.0),
+            ["@takedown_any", v, ..] => t.any = on(v),
+            ["@takedown_launch", v, ..] => t.launch = num(v, t.launch).clamp(0.0, 60.0),
+            ["@chase_takedowns", v, ..] => t.escape = num(v, t.escape as f32).clamp(0.0, 100.0) as u32,
+            ["@takedowns", v, ..] => t.enabled = on(v),
+            ["@junctions", v, ..] => j.enabled = on(v),
+            ["@light_time", v, ..] => j.light_time = num(v, j.light_time).clamp(0.2, 10.0),
+            ["@light_lamps", v, ..] => j.lamps = on(v),
+            ["@give_way", v, ..] => j.give_way = on(v),
+            ["@unjam", v, ..] => j.unjam = num(v, j.unjam).clamp(0.0, 600.0),
+            ["@light_hold", v, ..] => j.cap = v.eq_ignore_ascii_case("cap"),
+            ["@takedown_window", v, ..] => t.window = num(v, t.window).clamp(0.2, 10.0),
+            ["@takedown_speed", v, ..] => t.crash_dv = num(v, t.crash_dv).clamp(2.0, 60.0),
+            ["@takedown_boost", v, ..] => t.boost = num(v, t.boost).clamp(0.0, 1.0),
+            ["@takedown_explode", v, ..] => t.explode = on(v),
+            ["@takedown_keep", v, ..] => t.keep = num(v, t.keep).clamp(0.0, 1.0),
+            ["@takedown_straight", v, ..] => t.straight = on(v),
+            ["@grind", v, ..] => s.grind.enabled = on(v),
+            ["@grind_speed", v, ..] => s.grind.min_speed = num(v, s.grind.min_speed).clamp(0.0, 100.0),
+            ["@grind_drag", v, ..] => s.grind.drag = num(v, s.grind.drag).clamp(0.0, 1.0),
+            ["@grind_damage", v, ..] => s.grind.damage = num(v, s.grind.damage).clamp(0.0, 1.0),
+            ["@grind_sparks", v, ..] => s.grind.sparks = num(v, s.grind.sparks).clamp(0.0, 5.0),
+            ["@taken_down_boost", v, ..] => t.taken_boost = num(v, t.taken_boost).clamp(0.0, 1.0),
             ["@mode", m, ..] => s.paradise = !["off", "los_santos", "ls", "lossantos"].iter().any(|o| m.eq_ignore_ascii_case(o)),
             ["@start_car", m, ..] => s.start_car = (!["none", "off", "0"].iter().any(|o| m.eq_ignore_ascii_case(o))).then(|| m.to_string()),
             ["@start", x, y, z, ..] => {
@@ -587,6 +652,12 @@ extern "C" fn script_main() {
     let mut air = air::Air::default();
     let mut tuning = physics::CarTuning::default();
     let mut police = settings.police;
+    let mut takedown_settings = settings.takedown;
+    let mut takedowns = takedown::Takedowns::default();
+    let mut grind_settings = settings.grind;
+    let mut grind = grind::Grind::default();
+    let mut junction_settings = settings.junctions;
+    let mut junctions = settings.paradise.then(junctions::Junctions::load);
     let mut debug_log = settings.debug_log;
     let mut perf_on = settings.perf;
     let mut perf = perf::Perf::new(n::get_game_timer());
@@ -597,6 +668,11 @@ extern "C" fn script_main() {
     let mut shield = propshield::PropShield::load();
     let mut guard = settings.paradise.then(spawnguard::SpawnGuard::load);
     let mut last_settings = 0;
+    let mut gps = gps::GpsWatch::default();
+    let mut no_missions = settings.paradise.then(missions::NoMissions::default);
+    let mut gta_missions = settings.gta_missions;
+    let mut shops = settings.paradise.then(shops::Shops::load);
+    let mut shops_on = settings.shops;
 
     loop {
         if keys.pressed(VK_F4) {
@@ -639,6 +715,14 @@ extern "C" fn script_main() {
             g.update(ped, now);
         }
         perf.done(0);
+        if settings.paradise {
+            gps.update(pos, n::get_entity_heading(ent), now);
+        }
+        perf.start();
+        if let Some(j) = junctions.as_mut() {
+            j.update(&junction_settings, ped, pos, now);
+        }
+        perf.done(7);
         if let Some(d) = &rescue_to {
             if let Some(why) = rescue.check(ped, ent, pos, now) {
                 if let RescueKind::Respawned(_, true) = why {
@@ -681,8 +765,13 @@ extern "C" fn script_main() {
             drift_settings = s.drift;
             air_settings = s.air;
             police = s.police;
+            takedown_settings = s.takedown;
+            grind_settings = s.grind;
+            junction_settings = s.junctions;
             debug_log = s.debug_log;
             perf_on = s.perf;
+            gta_missions = s.gta_missions;
+            shops_on = s.shops;
         }
         if traffic != 1.0 {
             n::set_vehicle_density_multiplier_this_frame(traffic);
@@ -702,45 +791,71 @@ extern "C" fn script_main() {
                 n::set_ped_can_be_knocked_off_vehicle(ped, if driven != 0 { 1 } else { 0 });
             }
             perf.start();
-            shield.sweep(driven, now);
-            perf.done(1);
-            shield.update(driven);
-            perf.done(2);
-            let event = crash.update(&wreck_settings, ped, now, &mut shield);
-            if matches!(event, wreck::Event::Wrecked { .. } | wreck::Event::Finished(_)) {
-                // The wreck scene runs inside that call; it isn't frame cost.
-                perf.start();
+            if let (Some(m), false) = (no_missions.as_mut(), gta_missions) {
+                m.update(shops.as_ref().map_or(&[][..], |s| s.blips()), now);
+            }
+            perf.done(8);
+            if let Some(s) = shops.as_mut() {
+                s.update(shops_on, ped, driven, &mut boost, now);
+            }
+            perf.done(9);
+            // A junkyard has the car (stopping it, or its menu is open):
+            // no crashes, boost or police driving on it meanwhile.
+            if shops.as_ref().is_some_and(|s| s.busy()) {
+                crash.reset();
             } else {
-                perf.done(3);
-            }
-            match event {
-                wreck::Event::Wrecked { dv } => {
-                    boost.stop();
-                    log(&format!("WRECKED at ({:.1}, {:.1}, {:.1}), speed change {:.1} m/s", pos.x, pos.y, pos.z, dv));
-                    rescue = Rescue::default();
-                    continue;
+                perf.start();
+                shield.sweep(driven, now);
+                perf.done(1);
+                shield.update(driven);
+                perf.done(2);
+                let mut ctx = takedowns.update(&takedown_settings, ped, driven, now, &mut boost, &|v| chase.ramming(v));
+                ctx.grinding = grind.update(&grind_settings, driven, shield.shielding(), ctx.attacking, now);
+                let event = crash.update(&wreck_settings, ped, now, &mut shield, &ctx);
+                if matches!(event, wreck::Event::Wrecked { .. } | wreck::Event::Finished(_)) {
+                    if let Some(word) = ctx.taken_down {
+                        boost.lose(takedown_settings.taken_boost);
+                        log(&format!("{word} by police car {} (kept), boost -{:.2}", ctx.taken_by, takedown_settings.taken_boost));
+                    }
+                    takedowns.reset();
                 }
-                wreck::Event::Finished(why) => {
-                    boost.stop();
-                    log(&format!("WRECKED ({why}) at ({:.1}, {:.1}, {:.1})", pos.x, pos.y, pos.z));
-                    rescue = Rescue::default();
-                    continue;
+                if matches!(event, wreck::Event::Wrecked { .. } | wreck::Event::Finished(_)) {
+                    // The wreck scene runs inside that call; it isn't frame cost.
+                    perf.start();
+                } else {
+                    perf.done(3);
                 }
-                wreck::Event::Prop(dv) => log(&format!("prop knocked over ({dv:.1} m/s), speed and health given back")),
-                wreck::Event::Impact(dv) => log(&format!("impact {dv:.1} m/s")),
-                wreck::Event::None => {}
+                match event {
+                    wreck::Event::Wrecked { dv } => {
+                        boost.stop();
+                        log(&format!("WRECKED at ({:.1}, {:.1}, {:.1}), speed change {:.1} m/s", pos.x, pos.y, pos.z, dv));
+                        rescue = Rescue::default();
+                        continue;
+                    }
+                    wreck::Event::Finished(why) => {
+                        boost.stop();
+                        log(&format!("WRECKED ({why}) at ({:.1}, {:.1}, {:.1})", pos.x, pos.y, pos.z));
+                        rescue = Rescue::default();
+                        continue;
+                    }
+                    wreck::Event::Prop(dv) => log(&format!("prop knocked over ({dv:.1} m/s), speed and health given back")),
+                    wreck::Event::Attack(dv) => log(&format!("rammed a police car ({dv:.1} m/s), speed and health given back")),
+                    wreck::Event::Grind(dv) => log(&format!("grind: a {dv:.1} m/s hit while grinding, not a crash")),
+                    wreck::Event::Impact(dv) => log(&format!("impact {dv:.1} m/s")),
+                    wreck::Event::None => {}
+                }
+                perf.start();
+                // Car power first: boosting overrides it on the player's car.
+                tuning.update(car.0, car.1, pos);
+                drift.update(driven, &drift_settings);
+                air.update(driven, &air_settings, air_gravity);
+                physics::vehicle_forces(air_gravity, downforce, pos);
+                perf.done(5);
+                boost.update(&boost_settings, ped, now);
+                perf.done(4);
+                chase.update(&police, ped, pos, now, &|v| takedowns.hands_off(v));
+                perf.done(6);
             }
-            perf.start();
-            // Car power first: boosting overrides it on the player's car.
-            tuning.update(car.0, car.1, pos);
-            drift.update(driven, &drift_settings);
-            air.update(driven, &air_settings, air_gravity);
-            physics::vehicle_forces(air_gravity, downforce, pos);
-            perf.done(5);
-            boost.update(&boost_settings, ped, now);
-            perf.done(4);
-            chase.update(&police, ped, pos, now);
-            perf.done(6);
         }
         if perf_on {
             perf.frame(now, n::get_frame_time());

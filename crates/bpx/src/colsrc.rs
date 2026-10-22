@@ -12,6 +12,14 @@
 //! Every step that reads collision takes either a Burnout collision bundle
 //! (or a game folder: its WORLDCOL.BIN) or a `.pcx` file, for which the stock
 //! WORLDCOL.BIN is found through BPX_STOCK_COL or DEFAULT_STOCK.
+//!
+//! A modded map (OTN, ...) changes some units' collision. The `.pcx` records
+//! each unit's stock collision (polygon count and a hash), so a unit that
+//! differs is recognised: there the map's own collision is used as it is,
+//! with the added pieces after it. Every polygon comes with an id for the
+//! collision edits: its index in the stock-plus-added list, which the added
+//! pieces keep in changed units too (all hand edits so far are on added
+//! pieces), and MODDED_ID + its index for a modded unit's own polygons.
 
 use anyhow::{bail, Context, Result};
 use bnd2::Bundle;
@@ -22,12 +30,16 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-const MAGIC: &[u8; 4] = b"PCX1";
+const MAGIC: &[u8; 4] = b"PCX2";
+/// The first format, without the stock units' fingerprints.
+const MAGIC_V1: &[u8; 4] = b"PCX1";
+/// Collision edit ids of a modded map's own polygons in a unit it changed.
+pub const MODDED_ID: u32 = 0x8000_0000;
 /// Burnout's own collision, relative to the project folder.
 pub const DEFAULT_STOCK: &str = "../Burnout Paradise Remastered/WORLDCOL.BIN";
 
-/// One unit's polygons.
-pub type Unit = (u32, Vec<CollisionPoly>);
+/// One unit's polygons, and each polygon's id for the collision edits.
+pub type Unit = (u32, Vec<CollisionPoly>, Vec<u32>);
 
 /// The collision units in `path`, sorted by unit number.
 pub fn load(path: &Path) -> Result<Vec<Unit>> {
@@ -37,10 +49,16 @@ pub fn load(path: &Path) -> Result<Vec<Unit>> {
         return load_pcx(path, &stock);
     }
     let path = if path.is_dir() { path.join("WORLDCOL.BIN") } else { path.to_path_buf() };
-    load_bundle(&path)
+    Ok(load_bundle(&path)?
+        .into_iter()
+        .map(|(u, p)| {
+            let ids = (0..p.len() as u32).collect();
+            (u, p, ids)
+        })
+        .collect())
 }
 
-fn load_bundle(path: &Path) -> Result<Vec<Unit>> {
+fn load_bundle(path: &Path) -> Result<Vec<(u32, Vec<CollisionPoly>)>> {
     let b = Bundle::open(path).with_context(|| format!("opening collision {}", path.display()))?;
     let mut out = Vec::new();
     for e in b.entries.iter().filter(|e| e.type_id == types::POLYGON_SOUP_LIST) {
@@ -56,6 +74,33 @@ fn key(p: &CollisionPoly) -> (u32, Vec<u32>) {
     (p.tag, p.verts.iter().flat_map(|v| v.map(f32::to_bits)).collect())
 }
 
+/// Identity of a polygon's shape, whatever its tag and vertex order, to 2 cm:
+/// a modded map that saved a unit again moves its vertices by tiny amounts.
+fn shape_key(p: &CollisionPoly) -> Vec<[i32; 3]> {
+    let mut v: Vec<[i32; 3]> = p.verts.iter().map(|v| v.map(|c| (c * 50.0).round() as i32)).collect();
+    v.sort();
+    v
+}
+
+/// A unit's stock collision, to recognise it again: FNV-1a over every
+/// polygon's tag and vertices.
+fn fingerprint(polys: &[CollisionPoly]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut add = |v: u32| {
+        for b in v.to_le_bytes() {
+            h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
+        }
+    };
+    for p in polys {
+        add(p.tag);
+        add(p.verts.len() as u32);
+        for v in &p.verts {
+            v.iter().for_each(|c| add(c.to_bits()));
+        }
+    }
+    h
+}
+
 struct Writer(Vec<u8>);
 
 impl Writer {
@@ -63,6 +108,9 @@ impl Writer {
         self.0.push(v);
     }
     fn u32(&mut self, v: u32) {
+        self.0.extend_from_slice(&v.to_le_bytes());
+    }
+    fn u64(&mut self, v: u64) {
         self.0.extend_from_slice(&v.to_le_bytes());
     }
     fn f32(&mut self, v: f32) {
@@ -84,6 +132,9 @@ impl Reader<'_> {
     fn u32(&mut self) -> Result<u32> {
         Ok(u32::from_le_bytes(self.take(4)?.try_into()?))
     }
+    fn u64(&mut self) -> Result<u64> {
+        Ok(u64::from_le_bytes(self.take(8)?.try_into()?))
+    }
     fn f32(&mut self) -> Result<f32> {
         Ok(f32::from_le_bytes(self.take(4)?.try_into()?))
     }
@@ -97,8 +148,8 @@ const RUN_ADDED: u8 = 1;
 /// keeps only what the combined file adds to the stock one, then checks that
 /// loading it back gives the combined collision exactly.
 pub fn split(stock: &Path, combined: &Path, out: &Path) -> Result<()> {
-    let stock_units: HashMap<u32, Vec<CollisionPoly>> = load(stock)?.into_iter().collect();
-    let combined_units = load(combined)?;
+    let stock_units: HashMap<u32, Vec<CollisionPoly>> = load(stock)?.into_iter().map(|(u, p, _)| (u, p)).collect();
+    let combined_units: Vec<(u32, Vec<CollisionPoly>)> = load(combined)?.into_iter().map(|(u, p, _)| (u, p)).collect();
     let mut w = Writer(Vec::new());
     w.0.extend_from_slice(MAGIC);
     w.u32(combined_units.len() as u32);
@@ -136,6 +187,8 @@ pub fn split(stock: &Path, combined: &Path, out: &Path) -> Result<()> {
             }
         }
         w.u32(*unit);
+        w.u32(base.len() as u32);
+        w.u64(fingerprint(base));
         w.u32(runs.len() as u32);
         for r in &runs {
             match r {
@@ -167,7 +220,7 @@ pub fn split(stock: &Path, combined: &Path, out: &Path) -> Result<()> {
     if back.len() != combined_units.len() {
         bail!("check failed: {} units back, {} expected", back.len(), combined_units.len());
     }
-    for ((ua, pa), (ub, pb)) in back.iter().zip(&combined_units) {
+    for ((ua, pa, _), (ub, pb)) in back.iter().zip(&combined_units) {
         if ua != ub || pa.len() != pb.len() || pa.iter().zip(pb).any(|(a, b)| key(a) != key(b)) {
             bail!("check failed in unit {ub}");
         }
@@ -182,33 +235,318 @@ pub fn split(stock: &Path, combined: &Path, out: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `bpx col-bounds <WORLDCOL.BIN>`: each unit's bounding box (Burnout axes).
+pub fn bounds(path: &Path) -> Result<()> {
+    println!("unit,minx,miny,minz,maxx,maxy,maxz");
+    for (u, polys) in load_bundle(path)? {
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for v in polys.iter().flat_map(|p| &p.verts) {
+            for k in 0..3 {
+                lo[k] = lo[k].min(v[k]);
+                hi[k] = hi[k].max(v[k]);
+            }
+        }
+        if !polys.is_empty() {
+            println!("{u},{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+        }
+    }
+    Ok(())
+}
+
+/// `bpx col-compare <stock WORLDCOL.BIN> <modded WORLDCOL.BIN>`: which units
+/// a mod changed, and how much of the stock collision it kept.
+pub fn compare(stock: &Path, modded: &Path) -> Result<()> {
+    let a: HashMap<u32, Vec<CollisionPoly>> = load_bundle(stock)?.into_iter().collect();
+    let b: HashMap<u32, Vec<CollisionPoly>> = load_bundle(modded)?.into_iter().collect();
+    let mut units: Vec<u32> = a.keys().chain(b.keys()).copied().collect();
+    units.sort();
+    units.dedup();
+    let empty = Vec::new();
+    let (mut changed, mut kept_total, mut lost_total, mut new_total, mut prefix_units) = (0, 0, 0, 0, 0);
+    for u in units {
+        let (pa, pb) = (a.get(&u).unwrap_or(&empty), b.get(&u).unwrap_or(&empty));
+        if pa.len() == pb.len() && pa.iter().zip(pb).all(|(x, y)| key(x) == key(y)) {
+            continue;
+        }
+        changed += 1;
+        let mut have: HashMap<(u32, Vec<u32>), usize> = HashMap::new();
+        for p in pb {
+            *have.entry(key(p)).or_default() += 1;
+        }
+        let mut kept = 0;
+        for p in pa {
+            if let Some(c) = have.get_mut(&key(p)).filter(|c| **c > 0) {
+                *c -= 1;
+                kept += 1;
+            }
+        }
+        let prefix = pa.iter().zip(pb).take_while(|(x, y)| key(x) == key(y)).count();
+        if prefix == pa.len() {
+            prefix_units += 1;
+        }
+        kept_total += kept;
+        lost_total += pa.len() - kept;
+        new_total += pb.len() - kept;
+        println!("unit {u}: stock {} polygons, modded {}; {kept} kept ({prefix} in the same place from the start), {} gone, {} new", pa.len(), pb.len(), pa.len() - kept, pb.len() - kept);
+    }
+    println!("{changed} units changed: {kept_total} stock polygons kept, {lost_total} gone, {new_total} new; {prefix_units} units keep all of stock as their start");
+    Ok(())
+}
+
+/// `bpx col-compare <stock> <modded> <extra.pcx>`: also, how many of the
+/// added pieces lie where the mod built something new (within 3 m above or
+/// below a new polygon's footprint, on a 4 m grid): places to check in game.
+pub fn compare_added(stock: &Path, modded: &Path, pcx: &Path) -> Result<()> {
+    let a: HashMap<u32, Vec<CollisionPoly>> = load_bundle(stock)?.into_iter().collect();
+    std::env::set_var("BPX_STOCK_COL", modded);
+    let units = load(pcx)?;
+    const CELL: f32 = 4.0;
+    let (mut near_total, mut added_total) = (0usize, 0usize);
+    let empty = Vec::new();
+    for (unit, polys, ids) in units {
+        if !ids.iter().any(|&i| i >= MODDED_ID) {
+            continue;
+        }
+        let stock_keys: std::collections::HashSet<Vec<[i32; 3]>> = a.get(&unit).unwrap_or(&empty).iter().map(shape_key).collect();
+        // Cells under the mod's new polygons, with their height range.
+        let mut cells: HashMap<(i32, i32), (f32, f32)> = HashMap::new();
+        for (p, &id) in polys.iter().zip(&ids) {
+            if id < MODDED_ID || stock_keys.contains(&shape_key(p)) {
+                continue;
+            }
+            let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+            for v in &p.verts {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(v[k]);
+                    hi[k] = hi[k].max(v[k]);
+                }
+            }
+            // Burnout is y up: the ground plane is x, z.
+            for cx in (lo[0] / CELL).floor() as i32..=(hi[0] / CELL).floor() as i32 {
+                for cz in (lo[2] / CELL).floor() as i32..=(hi[2] / CELL).floor() as i32 {
+                    let c = cells.entry((cx, cz)).or_insert((f32::MAX, f32::MIN));
+                    c.0 = c.0.min(lo[1]);
+                    c.1 = c.1.max(hi[1]);
+                }
+            }
+        }
+        let (mut near, mut added) = (0, 0);
+        for (p, &id) in polys.iter().zip(&ids) {
+            if id >= MODDED_ID {
+                continue;
+            }
+            added += 1;
+            let n = p.verts.len() as f32;
+            let c = p.verts.iter().fold([0.0; 3], |s, v| [s[0] + v[0] / n, s[1] + v[1] / n, s[2] + v[2] / n]);
+            if let Some(&(lo, hi)) = cells.get(&((c[0] / CELL).floor() as i32, (c[2] / CELL).floor() as i32)) {
+                if c[1] >= lo - 3.0 && c[1] <= hi + 3.0 {
+                    near += 1;
+                }
+            }
+        }
+        if near > 0 {
+            println!("unit {unit}: {near} of {added} added pieces where the mod built something new");
+        }
+        near_total += near;
+        added_total += added;
+    }
+    println!("{near_total} of {added_total} added pieces in changed units lie where the mod built something new");
+    Ok(())
+}
+
+/// Added pieces dropped for a modded map: in a unit the mod changed, those
+/// that clash with its own new collision (`bpx col-modcompat`). Kept in
+/// tools/collision/modded_maps.json (or BPX_MODDED_COL), per unit a list of
+/// { "map", "count", "fingerprint" (the modded unit's), "drop": [edit ids] },
+/// applied only when the modded unit is exactly that one.
+pub const DEFAULT_MODDED: &str = "tools/collision/modded_maps.json";
+
+fn modded_path() -> PathBuf {
+    std::env::var_os("BPX_MODDED_COL").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(DEFAULT_MODDED))
+}
+
+/// Added piece ids to drop in `unit` for this modded collision, and the map's name.
+fn modded_drops(doc: &serde_json::Value, unit: u32, polys: &[CollisionPoly]) -> Option<(String, std::collections::HashSet<u32>)> {
+    let fp = format!("{:016x}", fingerprint(polys));
+    doc["units"][unit.to_string()].as_array()?.iter().find_map(|e| {
+        (e["count"].as_u64() == Some(polys.len() as u64) && e["fingerprint"].as_str() == Some(fp.as_str())).then(|| {
+            let map = e["map"].as_str().unwrap_or("modded map").to_string();
+            (map, e["drop"].as_array().into_iter().flatten().filter_map(|v| v.as_u64().map(|v| v as u32)).collect())
+        })
+    })
+}
+
+/// `bpx col-modcompat <stock WORLDCOL.BIN> <modded WORLDCOL.BIN> <extra.pcx> <map name>`:
+/// finds the added pieces that clash with a modded map's new collision and
+/// records them in modded_maps.json (replacing that map's earlier entries).
+///
+/// A clash: most of the piece (its corners, edge middles and centre) lies
+/// over the mod's new collision (a polygon stock Burnout doesn't have, to
+/// 2 cm), from 2 m below to 4 m above it, where stock Burnout had no
+/// collision of its own at that height. The added pieces fill in where
+/// Burnout has none, so where the mod now has some, theirs wins.
+pub fn modcompat(stock: &Path, modded: &Path, pcx: &Path, name: &str) -> Result<()> {
+    const CELL: f32 = 2.0;
+    let stock_units: HashMap<u32, Vec<CollisionPoly>> = load_bundle(stock)?.into_iter().collect();
+    let modded_units: HashMap<u32, Vec<CollisionPoly>> = load_bundle(modded)?.into_iter().collect();
+    let path = modded_path();
+    std::env::set_var("BPX_STOCK_COL", modded);
+    std::env::set_var("BPX_MODDED_COL", "none");
+    let units = load(pcx)?;
+    let mut doc: serde_json::Value = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| {
+        serde_json::json!({"format": "paradise-modded-collision-v1",
+            "about": "Added collision pieces dropped for modded Burnout maps, where they clash with the map's own new collision (bpx col-modcompat). Applied per unit only when the modded unit matches exactly."})
+    });
+    // Drop this map's earlier entries.
+    if let Some(units) = doc["units"].as_object_mut() {
+        for list in units.values_mut() {
+            if let Some(a) = list.as_array_mut() {
+                a.retain(|e| e["map"].as_str() != Some(name));
+            }
+        }
+        units.retain(|_, l| l.as_array().is_some_and(|a| !a.is_empty()));
+    }
+    // Cells (x, z) a set of polygons covers, with the height ranges there.
+    fn cover(polys: &[&CollisionPoly]) -> HashMap<(i32, i32), Vec<(f32, f32)>> {
+        let mut out: HashMap<(i32, i32), Vec<(f32, f32)>> = HashMap::new();
+        for p in polys {
+            let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+            for v in &p.verts {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(v[k]);
+                    hi[k] = hi[k].max(v[k]);
+                }
+            }
+            let inside = |x: f32, z: f32| {
+                let n = p.verts.len();
+                let mut c = false;
+                for i in 0..n {
+                    let (a, b) = (p.verts[i], p.verts[(i + n - 1) % n]);
+                    if (a[2] > z) != (b[2] > z) && x < (b[0] - a[0]) * (z - a[2]) / (b[2] - a[2]) + a[0] {
+                        c = !c;
+                    }
+                }
+                c
+            };
+            for cx in (lo[0] / CELL).floor() as i32..=(hi[0] / CELL).floor() as i32 {
+                for cz in (lo[2] / CELL).floor() as i32..=(hi[2] / CELL).floor() as i32 {
+                    let (x, z) = ((cx as f32 + 0.5) * CELL, (cz as f32 + 0.5) * CELL);
+                    let corner = p.verts.iter().any(|v| (v[0] / CELL).floor() as i32 == cx && (v[2] / CELL).floor() as i32 == cz);
+                    if corner || inside(x, z) {
+                        out.entry((cx, cz)).or_default().push((lo[1], hi[1]));
+                    }
+                }
+            }
+        }
+        out
+    }
+    let empty = Vec::new();
+    let (mut total, mut changed) = (0usize, 0usize);
+    for (unit, polys, ids) in &units {
+        if !ids.iter().any(|&i| i >= MODDED_ID) {
+            continue;
+        }
+        changed += 1;
+        let stock_polys = stock_units.get(unit).unwrap_or(&empty);
+        let stock_shapes: std::collections::HashSet<Vec<[i32; 3]>> = stock_polys.iter().map(shape_key).collect();
+        let new: Vec<&CollisionPoly> = polys.iter().zip(ids).filter(|(p, &id)| id >= MODDED_ID && !stock_shapes.contains(&shape_key(p))).map(|(p, _)| p).collect();
+        if new.is_empty() {
+            continue;
+        }
+        let new_cells = cover(&new);
+        let stock_cells = cover(&stock_polys.iter().collect::<Vec<_>>());
+        let near = |cells: &HashMap<(i32, i32), Vec<(f32, f32)>>, x: f32, y: f32, z: f32| {
+            cells.get(&((x / CELL).floor() as i32, (z / CELL).floor() as i32)).is_some_and(|l| l.iter().any(|&(lo, hi)| y >= lo - 2.0 && y <= hi + 4.0))
+        };
+        let mut drop: Vec<u32> = Vec::new();
+        for (p, &id) in polys.iter().zip(ids) {
+            if id >= MODDED_ID || p.verts.is_empty() {
+                continue;
+            }
+            let n = p.verts.len();
+            let c = p.verts.iter().fold([0.0; 3], |s, v| [s[0] + v[0] / n as f32, s[1] + v[1] / n as f32, s[2] + v[2] / n as f32]);
+            let mut samples = vec![c];
+            for i in 0..n {
+                let (a, b) = (p.verts[i], p.verts[(i + 1) % n]);
+                samples.push(a);
+                samples.push([(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5]);
+            }
+            let clash = samples.iter().filter(|s| near(&new_cells, s[0], s[1], s[2]) && !near(&stock_cells, s[0], s[1], s[2])).count();
+            if clash * 2 >= samples.len() {
+                drop.push(id);
+            }
+        }
+        if drop.is_empty() {
+            continue;
+        }
+        let modded_polys = modded_units.get(unit).unwrap_or(&empty);
+        println!("unit {unit}: {} of {} added pieces clash with {name}'s new collision", drop.len(), ids.iter().filter(|&&i| i < MODDED_ID).count());
+        total += drop.len();
+        let entry = serde_json::json!({"map": name, "count": modded_polys.len(), "fingerprint": format!("{:016x}", fingerprint(modded_polys)), "drop": drop});
+        let units = doc["units"].as_object_mut().map(|_| ()).is_some();
+        if !units {
+            doc["units"] = serde_json::json!({});
+        }
+        let list = doc["units"].as_object_mut().unwrap().entry(unit.to_string()).or_insert_with(|| serde_json::json!([]));
+        list.as_array_mut().unwrap().push(entry);
+    }
+    std::fs::write(&path, serde_json::to_string(&doc)?)?;
+    println!("{name}: {changed} units changed; {total} added pieces dropped -> {}", path.display());
+    Ok(())
+}
+
 fn load_pcx(path: &Path, stock: &Path) -> Result<Vec<Unit>> {
     let mut data = Vec::new();
     ZlibDecoder::new(std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?).read_to_end(&mut data)?;
-    let stock_units: HashMap<u32, Vec<CollisionPoly>> = load_bundle(stock)
+    let mut stock_units: HashMap<u32, Vec<CollisionPoly>> = load_bundle(stock)
         .with_context(|| format!("{} needs Burnout's own collision (BPX_STOCK_COL)", path.display()))?
         .into_iter()
         .collect();
+    let drops_doc: Option<serde_json::Value> = {
+        let p = modded_path();
+        (p.as_os_str() != "none").then(|| std::fs::read(&p).ok().and_then(|b| serde_json::from_slice(&b).ok())).flatten()
+    };
+    let mut dropped: HashMap<String, usize> = HashMap::new();
     let mut r = Reader(&data, 0);
-    if r.take(4)? != MAGIC {
-        bail!("{} is not a collision extra file", path.display());
-    }
+    let v2 = match r.take(4)? {
+        m if m == MAGIC => true,
+        m if m == MAGIC_V1 => false,
+        _ => bail!("{} is not a collision extra file", path.display()),
+    };
     let n = r.u32()?;
     let mut out = Vec::with_capacity(n as usize);
-    let empty = Vec::new();
+    let mut modded: Vec<u32> = Vec::new();
     for _ in 0..n {
         let unit = r.u32()?;
-        let base = stock_units.get(&unit).unwrap_or(&empty);
+        let base = stock_units.remove(&unit).unwrap_or_default();
+        // Is this the stock unit the extra file was made against?
+        let same = if v2 {
+            let (count, hash) = (r.u32()?, r.u64()?);
+            base.len() == count as usize && fingerprint(&base) == hash
+        } else {
+            true
+        };
         let runs = r.u32()?;
-        let mut polys = Vec::new();
+        let (mut polys, mut ids) = (Vec::new(), Vec::new());
+        if !same {
+            // A modded map's own collision, then the added pieces.
+            modded.push(unit);
+            ids.extend((0..base.len() as u32).map(|i| MODDED_ID + i));
+            polys.extend_from_slice(&base);
+        }
+        let mut at = 0u32;
         for _ in 0..runs {
             match r.u8()? {
                 RUN_STOCK => {
                     let (start, len) = (r.u32()? as usize, r.u32()? as usize);
-                    let part = base.get(start..start + len).with_context(|| {
-                        format!("unit {unit}: Burnout's collision doesn't match (is it Burnout Paradise Remastered's WORLDCOL.BIN?)")
-                    })?;
-                    polys.extend_from_slice(part);
+                    if same {
+                        let part = base.get(start..start + len).with_context(|| {
+                            format!("unit {unit}: Burnout's collision doesn't match (is it Burnout Paradise Remastered's WORLDCOL.BIN?)")
+                        })?;
+                        polys.extend_from_slice(part);
+                        ids.extend(at..at + len as u32);
+                    }
+                    at += len as u32;
                 }
                 RUN_ADDED => {
                     for _ in 0..r.u32()? {
@@ -219,12 +557,39 @@ fn load_pcx(path: &Path, stock: &Path) -> Result<Vec<Unit>> {
                             verts.push([r.f32()?, r.f32()?, r.f32()?]);
                         }
                         polys.push(CollisionPoly { verts, tag });
+                        ids.push(at);
+                        at += 1;
                     }
                 }
                 k => bail!("{}: unknown run kind {k}", path.display()),
             }
         }
-        out.push((unit, polys));
+        if !same {
+            // Added pieces that clash with the modded map's own collision.
+            if let Some((map, drop)) = drops_doc.as_ref().and_then(|d| modded_drops(d, unit, &base)) {
+                let before = polys.len();
+                let (p, i): (Vec<CollisionPoly>, Vec<u32>) = polys.into_iter().zip(ids).filter(|(_, id)| !drop.contains(id)).unzip();
+                *dropped.entry(map).or_default() += before - p.len();
+                (polys, ids) = (p, i);
+            }
+        }
+        out.push((unit, polys, ids));
+    }
+    for (map, n) in &dropped {
+        eprintln!("collision: {n} added pieces dropped where they clash with {map}'s own collision");
+    }
+    // Units only the modded map has collision in.
+    for (unit, polys) in stock_units.into_iter().filter(|(_, p)| !p.is_empty()) {
+        modded.push(unit);
+        let ids = (0..polys.len() as u32).map(|i| MODDED_ID + i).collect();
+        out.push((unit, polys, ids));
+    }
+    if !modded.is_empty() {
+        modded.sort();
+        eprintln!(
+            "collision: {} units differ from stock Burnout (a modded map); there its own collision is used, with the added pieces: {modded:?}",
+            modded.len()
+        );
     }
     out.sort_by_key(|u| u.0);
     Ok(out)

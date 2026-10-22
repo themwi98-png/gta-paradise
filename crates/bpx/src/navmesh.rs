@@ -107,8 +107,8 @@ struct Source {
 fn load_source(col: &Path, placement: Placement, margin: f32) -> Result<Source> {
     let mut tris = Vec::new();
     let edits = crate::edits::CollisionEdits::load()?;
-    for (unit, polys) in crate::colsrc::load(col)? {
-        for p in edits.polys(unit, polys) {
+    for (unit, polys, ids) in crate::colsrc::load(col)? {
+        for p in edits.polys(unit, polys, &ids) {
             let tag = CollisionTag::decode(p.tag);
             let v: Vec<[f32; 3]> = p.verts.iter().map(|&v| placement.apply(v)).collect();
             // Water collision is the sea / lake bed: solid but not walkable.

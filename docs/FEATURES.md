@@ -6,7 +6,7 @@ it and Burnout-style driving on top.
 
 **Status key:** ✅ confirmed working in game · 🟡 needs further testing · ⬜ not done yet / idea
 
-Last updated: 2026-10-16 (v0.2.1)
+Last updated: 2026-10-22 (v0.3.0)
 
 
 ## The map
@@ -19,7 +19,7 @@ Last updated: 2026-10-16 (v0.2.1)
 | Map height | ✅ | Placed with `--offset 0,0,9.9` so Paradise's sea sits at GTA's sea level. |
 | Sea | 🟡 | Sea level tuned by eye; covers the whole world, no gaps; calm water near shore, no waves through streets. |
 | Lakes (incl. Silver Lake) and river | 🟡 | Raised lake levels from Burnout's water meshes / water collision; shoreline follows curves. |
-| Water fixes | ✅ | 2,095 flooded 16 m squares removed with the viewer's water editor (`tools/edits/water_edits.json`). |
+| Water fixes | ✅ | 2,667 flooded 16 m squares removed with the water editor (`tools/edits/water_edits.json`). |
 | Street props | ✅ | 16,120 of Burnout's 27,512 props replaced by similar GTA props: lamp posts, traffic lights, rail crossing signals, roadworks barriers, cones, water barrels, bins, dumpsters, benches, phones, newspaper boxes, mailboxes, parking meters, picnic tables, drums, crates, stop / yield / no-entry signs. Same spots and facing, set on the ground. Table: `tools/props_map.csv`. |
 | Breakable barriers instead of fixed ones | ✅ | All roadworks / stunt barriers now use the better-looking breakable `prop_barrier_work06a` (marks 14/15). |
 | Movable boxes instead of fixed ones | ✅ | Big crates and box pallets now use the movable `prop_box_wood01a` (marks 10/11/16). |
@@ -27,8 +27,10 @@ Last updated: 2026-10-16 (v0.2.1)
 | Swinging stunt gates removed | ✅ | Burnout's stunt gates (`STU_gate01`) are left out entirely: in Burnout they break once and stay gone, so in a normal playthrough they're usually missing anyway. |
 | Railings, overhead lane-sign gantries, warning chevrons | ⬜ | No close GTA match picked yet (railings are the biggest gap: 2,860). |
 | District name signs, billboards | ⬜ | Paradise-specific; no GTA equivalent. |
-| Minimap / pause map showing Paradise City | ⬜ | Still shows Los Santos art (GPS routes use Paradise roads). Idea: render a top-down Paradise map into GTA's radar. On hold. |
-| Distant LODs / horizon | ⬜ | |
+| Radar and pause map showing Paradise City | ✅ | Roads, buildings, railways, lakes and sea drawn from Burnout's map into GTA's radar tiles and pause-map images (`bpx gta-minimap`, the setup's "Radar and map" step). The coast is hand-traced in the map coast editor (`tools/edits/minimap_edits.json`). District names are still Los Santos's. |
+| GPS routes | 🟡 | A waypoint gets a route over Paradise's roads, found by the plugin (GTA's own route finder doesn't work on the converted roads) and drawn on the radar; it reroutes when you leave it. |
+| Distant scenery and low-detail city | ✅ | Burnout's background mountains are always drawn, and its low-detail model of each map section stands in for that section until you're close (`bpx gta-visual`, on by default; `--lod-far off` leaves them out). |
+| Burnout with the OTN mod | ✅ | The setup builds from a Burnout folder with OTN installed: its changed and new map sections, props and textures convert, and generated collision that would clash with OTN's new pieces is left out (`tools/collision/modded_maps.json`). |
 | Known collision spots (2) | ⬜ | Phantom slope at (1421, 759), hovering under the railway at (2615, 676) — `tools/collision_issues.md`. Saved for a full collision pass. |
 
 ## Life in the city
@@ -43,7 +45,7 @@ Last updated: 2026-10-16 (v0.2.1)
 | Districts / police type | ✅ | Burnout's districts (hand-aligned) as GTA zones: LSPD everywhere, peds on the island. |
 | Los Santos leftover spawns removed | 🟡 | NPCs and vehicles that appear in mid-air (over 8 m up, or over nothing) are removed as they spawn, near or far (flying aircraft excepted). GTA's trains, whose tracks now run through the sky, are switched off. Logged to `paradise_spawns.csv`. |
 | No-spawn zones | 🟡 | Placed in the viewer's Spawns panel; GTA's parked-car spawners and NPC spawn spots are switched off inside, and anything else that appears there is removed. One zone so far (mark 21). |
-| Traffic lights that cycle | ⬜ | GTA may or may not drive the placed traffic-light props. |
+| Traffic lights that cycle | 🟡 | Burnout's 135 light-controlled junctions cycle on its timings (10 s green), GTA's traffic-light props show the colour, and the overhead lights with no GTA model light up. Cars stop at red, queue, and go on green one after another; at junctions without lights they give way to crossing cars. A car stuck in a junction for 10 s out of your sight is removed (`@junctions`, `@light_time`, `@light_lamps`, `@give_way`, `@unjam`, `@light_hold`). |
 | Pedestrian navmesh hand-editing | 🟡 | Implemented, untested |
 
 ## Police
@@ -52,9 +54,11 @@ Last updated: 2026-10-16 (v0.2.1)
 |---|---|---|
 | Police chase on Paradise roads | 🟡 | All of Paradise's road data kept loaded, so police dispatched from far away can route to you. Needs further testing. |
 | Faster, more aggressive pursuers | ✅ | Top skill and aggression, GTA's engine power, +100 % top speed (`@police_power`, `@police_top`). |
-| Police survive their own crashes | 🟡 | Pursuing police cars don't catch fire, their engines keep running, and their drivers aren't killed or thrown out (`@police_tough`). |
+| Police survive their own crashes | 🟡 | Pursuing police cars can't be damaged until your car hits them; they don't catch fire, their engines keep running, and their drivers aren't killed or thrown out (`@police_tough`). |
 | Police stay in their cars while you drive | ✅ | They still get out if you're on foot. |
-| Police notice you when in plain sight | ✅ | A police car within 120 m with a clear view reports you. |
+| Police know where you are | 🟡 | Any police car (or helicopter) within 400 m knows where you are, seen or not; get further away to lose them (`@police_sight`). |
+| Police keep up | ✅ | Police cars go where they point instead of sliding out (`@police_grip`), get extra pull when speeding up (`@police_accel`) and brake 3× harder (`@police_brakes`). Flipped or stuck ones are put back on the nearest road, facing you. |
+| Police ram you | ✅ | Police cars near you go for a PIT from behind or a slam from alongside, and oncoming ones steer in for a head-on (`@police_ram`, `@police_ram_oncoming`, `@police_rammers`). |
 | Police follow you off the roads | 🟡 | Police route along traffic lanes only. When you drive more than 40 m from any lane, police cars within 450 m are sent straight at you (by road until within 250 m), and go back to normal pursuit once you're back on the roads. Roads Burnout has no lanes on can be given lanes with the viewer's traffic editor. |
 | Chase recorder | ✅ (diagnostic) | `paradise_chase.csv` in the GTA folder logs pursuers once a second while wanted. |
 
@@ -83,9 +87,24 @@ Last updated: 2026-10-16 (v0.2.1)
 | Earning boost | ✅ | Driving fast, oncoming lane / wrong way, near misses (a car passing within about 2.5 m; oncoming worth more), drifts, air time and big air. |
 | Props don't hurt or slow your car | ✅ | Near a placed prop the car can't be damaged or dented, and hitting one never wrecks you. Props never change the car's speed, direction or spin: the moment one touches the car, its motion is put back to just before (not while touching another vehicle). |
 | Vehicles always hurt | 🟡 | Props never hurt the car (100 %). The protection drops just before another vehicle hits you (only vehicles closing in, not traffic alongside), and a hit while touching a vehicle is always a real crash. |
-| Props get tossed | ✅ | A prop you hit passes through the car as it's thrown clear (up and over, or well out to the side for lamp posts and benches); falling debris bounces off the car. |
+| Props get tossed | ✅ | A prop you hit passes through the car as it's thrown clear (up and over, or well out to the side for lamp posts and benches); falling debris bounces off the car. The camera ignores props passing through. |
 | Nothing gets stuck under the car | 🟡 | While moving, any loose prop or broken piece just ahead of the nose, along the way the car is moving (further ahead the faster you go), is swept aside. GTA doesn't expose mass, so heavy props are picked by model. |
-| Takedowns | ⬜ | Burnout mechanic, not started. |
+| **Takedowns** | ✅ | A car you hit stays vulnerable for `@takedown_window` (2 s): if it crashes, rolls or spins out, it's your takedown (banner: SLAM / SHUNT / T-BONE / VERTICAL / ROADBLOCK, DOUBLE / TRIPLE..., +half a boost gauge, `@takedown_boost`). A hit with 20 m/s closing speed takes it down at once (`@takedown_smash`), parked roadblock cars too. Taken-down cars are thrown off your path and explode (`@takedown_launch`, `@takedown_explode`). Any vehicle counts (`@takedown_any`). |
+| Taken down | ✅ | A wreck just after a police car hit you is TAKEN DOWN and costs a quarter of the gauge (`@taken_down_boost`). The police car that did it is spared by the wreck clear-up. |
+| Escaping by takedowns | ✅ | Five police takedowns in one chase: YOU ESCAPED!, wanted level cleared (`@chase_takedowns`). |
+| Ramming without spinning | ✅ | While ramming, your car can't be spun: it keeps pointing and moving the way it was going, steering still turns it, and the ram's slowdown stays (`@takedown_straight`, `@takedown_keep`). Rams from behind or alongside never wreck you. |
+| Grinding | ✅ | Scraping along a wall, barrier or car above 12 m/s barely slows (5 % a second) or damages (10 %) your car, throws GTA's rim sparks, and is never a crash (`@grind`, `@grind_speed`, `@grind_drag`, `@grind_damage`, `@grind_sparks`). |
+| Prop hits don't spin the car | 🟡 | For 0.2 s after a prop hit the car keeps turning the way it was: straight stays straight, a drift carries on (`@prop_straight`). |
+| Tyres sink into kerbs | ✅ | Every vehicle's tyres may sink into kerbs and bumps instead of the whole car being lifted over them (`@tyres_clip`, built in by the setup). |
+
+## Around Paradise City
+
+| Feature | Status | Notes |
+|---|---|---|
+| Drive-thrus with map blips | ✅ | Burnout's own drive-thru boxes: Auto Repair fixes the car, Gas Station fills the boost gauge, Paint Shop resprays it in random colours, Junkyard opens the car menu (`@shops`). |
+| Junkyard: modify the car | ✅ | Stops you dead on entry. Respray (19 colours plus factory, finish), rim type and rims, every body and performance part the car has, window tint, plate, livery, turbo, xenons. Not while wanted. |
+| Junkyard: select a new car | ✅ | Every GTA road vehicle in your game (776 in the current Legacy version), by class. The highlighted car turns on a turntable in the junkyard's display lot (marked by hand, `tools/edits/junkyard_lots.csv`), with bars for top speed, acceleration, braking and traction; Enter drives it away. Wrecks respawn you in the new car. |
+| GTA's missions removed | ✅ | Story missions, side activities, random events and their map blips are stopped and hidden (`@gta_missions` off). |
 
 ## Player experience
 
@@ -112,12 +131,13 @@ Last updated: 2026-10-16 (v0.2.1)
 
 ---
 
-## Editing tools (map viewer)
+## Editing tools (Paradise Viewer)
 
 Step-by-step instructions for every editor: [HOW_TO.md](HOW_TO.md).
 
-Open `tools/viewer/index.html` through the local viewer server
-(http://localhost:8765/tools/viewer/index.html). Works offline.
+The map viewer and its editors are a separate desktop app, Paradise Viewer
+(its own project, no longer in this repository). It shows the edits saved in
+this mod's `tools/edits/` and exports new ones to your Downloads folder.
 
 | Tool | Status | Saves to | Apply with |
 |---|---|---|---|
@@ -128,6 +148,9 @@ Open `tools/viewer/index.html` through the local viewer server
 | District aligner | ✅ | (values pasted to Claude) | — |
 | Prop replacement table | ✅ | `tools/props_map.csv` (text file) | `tools/rebuild_props.sh` |
 | Sidewalk editor (draw shapes to remove / add sidewalk for pedestrians) | 🟡 | `tools/edits/sidewalk_edits.json` | `tools/rebuild_navmesh.sh` |
+| Map coast editor (draw land / sea shapes over the radar's coast) | ✅ | `tools/edits/minimap_edits.json` | the setup's "Radar and map" step |
+| Junctions editor (switch junctions off, resize, add) | 🟡 | `tools/edits/junction_edits.json` | `tools/rebuild_traffic.sh` |
+| Junkyard display lots (F9 marks in game) | ✅ | `tools/edits/junkyard_lots.csv` (text file) | the setup's drive-thrus step |
 
 Each editor's export goes in `tools/edits/`, and the editors load those files
 on start, so saved edits always show and survive rebuilds.
@@ -154,9 +177,11 @@ script overwrites it with the project's copy.
 
 | Setting | Now | Meaning |
 |---|---|---|
-| `@mode` | paradise | `off` = normal GTA |
+| `@mode` | paradise | Which map is installed: `paradise` or `los_santos` (set by the setup's map choice) |
 | `@start` | 994.9 862.7 25.2 | Start / rescue spot |
 | `@start_car` | drifttampa | Vehicle you start in (`none` = on foot) |
+| `@shops` | on | Burnout's drive-thrus (repair, gas, paint, junkyard) |
+| `@gta_missions` | off | Keep GTA's missions, side activities and their blips |
 | `@wreck` | on | Burnout wrecks |
 | `@wreck_speed` | 25 | Sudden speed loss (m/s) that wrecks |
 | `@impact_speed` | 11 | Sudden speed loss for extra dents |
@@ -178,13 +203,31 @@ script overwrites it with the project's copy.
 | `@perf` | on | Log the plugin's cost per frame to `paradise.log` every 15 s |
 | `@debug_log` | off | Old position probe and driving trace (debugging) |
 | `@prop_keep` | 1 | Speed kept on a prop hit the plugin couldn't undo (fallback) |
+| `@prop_straight` | on | A prop hit can't spin the car |
 | `@wreck_crush`, `@wreck_crush_rounds` | 8000, 8 | How mangled wrecked cars get |
 | `@wreck_clear` | 6 | Radius (m) cleared of NPCs, vehicles and fires after a wreck (0 = off) |
 | `@police_power`, `@police_top` | 1, 100 | Pursuing police engine power, extra top speed % |
-| `@police_tough` | on | Police cars survive their own crashes |
+| `@police_tough` | on | Police cars can't be damaged until you hit them, and survive their own crashes |
+| `@police_grip` | 1 | Share of police cars' sideways slide taken away (0 = GTA's physics) |
+| `@police_sight` | 400 | Police this close (m) know where you are (0 = only what they see) |
+| `@police_accel`, `@police_brakes` | 1, 3 | Police extra pull (g) when speeding up; braking, times GTA's |
+| `@police_ram`, `@police_ram_oncoming`, `@police_rammers` | 12, on, 4 | Police ram you this much faster than you (m/s, 0 = off); oncoming ones go head-on; how many at once |
+| `@takedowns` | on | Takedowns |
+| `@takedown_window`, `@takedown_speed` | 2, 10 | How long a hit car stays vulnerable (s); speed change (m/s) that counts as its crash |
+| `@takedown_smash` | 20 | Closing speed (m/s) that takes a car down at once (0 = never) |
+| `@takedown_boost`, `@taken_down_boost` | 0.5, 0.25 | Gauge gained per takedown; lost when taken down |
+| `@takedown_any` | on | Any vehicle can be taken down |
+| `@takedown_explode`, `@takedown_launch` | on, 14 | Taken-down cars blow up; thrown off your path at this speed (m/s) |
+| `@chase_takedowns` | 5 | Police takedowns that end a chase (0 = never) |
+| `@takedown_keep`, `@takedown_straight` | 0.9, on | Speed your car keeps when ramming; held straight while ramming |
+| `@grind`, `@grind_speed` | on, 12 | Grinding; slowest speed that grinds (m/s) |
+| `@grind_drag`, `@grind_damage`, `@grind_sparks` | 0.05, 0.1, 1 | Speed lost per second; share of damage taken; spark size |
 | `@traffic` | 1 | Amount of traffic (0 = empty roads, up to 3) |
+| `@junctions`, `@light_time`, `@light_lamps` | on, 1, on | Traffic lights and give way; light timings, times Burnout's; lamps on overhead lights without a GTA model |
+| `@give_way`, `@unjam`, `@light_hold` | on, 10, halt | Give way at unlit junctions; remove cars stuck this long (s, 0 = never); stop at red by braking (`halt`) or cutting top speed (`cap`) |
 | `@car_top_speed`, `@car_power` | 1.35, 1.35 | Every car's top speed and engine power, times GTA's |
 | `@car_grip`, `@car_brakes` | 1.2, 2.5 | Grip and braking, times GTA's (built in: re-run the setup after changing) |
+| `@tyres_clip` | on | Tyres sink into kerbs (built in: re-run the setup after changing) |
 | `@air_gravity` | 3 | Gravity on cars in the air |
 | `@air_control` | 0.7 | How steady cars stay in the air (0 = off, 1 = held) |
 | `@barrel_roll`, `@barrel_roll_trigger` | on, 90 | Barrel rolls off split ramps; how hard a ramp must roll you (deg/s) |
@@ -202,10 +245,9 @@ script overwrites it with the project's copy.
 
 ## Ideas / not started
 
-- Minimap and pause map of Paradise City (on hold)
-- Takedowns and other Burnout mechanics
+- More Burnout mechanics (boost types, events)
+- District names on the map
 - Railings, sign gantries, chevrons as GTA props
 - Full collision pass (known spots above)
 - Pedestrian navmesh hand-editing beyond sidewalks (blocking / adding walkable areas)
 - Water editor: add water / change lake levels
-- LODs / distant city

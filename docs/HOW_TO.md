@@ -6,8 +6,9 @@ game. For what the mod does, see [FEATURES.md](FEATURES.md).
 
 ## The map viewer / editor
 
-Open http://localhost:8765/tools/viewer/index.html (the viewer's local server
-must be running; ask Claude to start it if the page doesn't load).
+The editors are in the Paradise Viewer app (a separate project, no longer in
+this repository). Start it from the Start menu; it finds this mod's folder
+and shows the edits saved in `tools/edits/`.
 
 - Pick map units in the **Units** box and **Load**; tick the layers you want
   (Visual, Collision stock / extra).
@@ -15,7 +16,10 @@ must be running; ask Claude to start it if the page doesn't load).
   go to your Downloads folder — move the file into
   `gta-paradise/tools/edits/` with the name given below, replacing the old one.
 - Editors load the saved project file when they start, so saved edits always
-  show, and exports include them.
+  show, and exports include them. That only happens while the editor has
+  nothing of its own saved in the app; the map coast editor also has a
+  **Load tools/edits/minimap_edits.json** button to start again from the
+  saved file.
 
 ### Collision (delete pieces)
 
@@ -108,6 +112,37 @@ Burnout's pavement and cobbles surfaces.
    - Add: ground and road inside become sidewalk.
 4. **Export edits** → `tools/edits/sidewalk_edits.json`.
 5. Rebuild: `bash gta-paradise/tools/rebuild_navmesh.sh`
+
+### Map coast (radar and pause map)
+
+For places where the radar and pause map draw land as sea or sea as land.
+
+1. **Map coast** panel → **Show map coast**: the map's sea shows in magenta
+   over the world, so you can see where it doesn't match the real shore.
+2. **Edit coast**; pick **Make land** or **Make sea**, click points around
+   the area, then **Finish shape** (sea shapes win where they overlap land,
+   so a lake can be cut out of a land shape). **Delete shape** mode: click
+   inside a shape to delete it (the smallest one under the cursor).
+3. **Export edits** → `tools/edits/minimap_edits.json`.
+4. Rebuild: `gta-paradise/target/release/paradise-setup-cli.exe --dev --only minimap,install`
+
+### Junctions (traffic lights and give way)
+
+1. **Junctions** panel → **Show junctions**: Burnout's traffic-light
+   junctions show red with their stop lines, junctions found without lights
+   green, ones you added blue, switched-off ones grey. **Play the lights**
+   runs Burnout's cycle.
+2. **Edit junctions**: in **Select** mode click a junction, then **Set size**
+   (metres) or **Switch off / on**; in **Add junction** mode click a
+   junction's centre.
+3. **Export edits** → `tools/edits/junction_edits.json`.
+4. Rebuild: `bash gta-paradise/tools/rebuild_traffic.sh`
+
+### Junkyard display lots
+
+Where a junkyard shows the car you're choosing. Drive to the lot, face the
+way the car should, press **F9**, and tell Claude the mark number; it goes in
+`tools/edits/junkyard_lots.csv` (x, y, z, heading).
 
 ### Props (which GTA prop replaces which Burnout prop)
 

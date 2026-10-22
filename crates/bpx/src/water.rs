@@ -213,8 +213,8 @@ pub fn generate(col: &Path, gta_water: &Path, out: &Path, placement: Placement, 
     let mut water_tris: Vec<[[f32; 3]; 3]> = Vec::new();
     let (mut lo, mut hi) = (WORLD_MIN, WORLD_MAX);
     let edits = crate::edits::CollisionEdits::load()?;
-    for (unit, polys) in units {
-        for p in edits.polys(unit, polys) {
+    for (unit, polys, ids) in units {
+        for p in edits.polys(unit, polys, &ids) {
             let tag = CollisionTag::decode(p.tag);
             if tag.surface_id == bw::SURFACE_INVISIBLE_WALL {
                 continue;

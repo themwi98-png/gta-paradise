@@ -85,6 +85,25 @@ impl Boost {
         }
     }
 
+    /// A reward from elsewhere (takedown.rs): `amount` of the gauge as it
+    /// is (not scaled by `@boost_fill`), with a note under the gauge unless
+    /// `what` is empty.
+    pub fn reward(&mut self, amount: f32, what: &str, now: i32) {
+        self.gauge = (self.gauge + amount).min(1.0);
+        if !what.is_empty() {
+            self.note = Some((what.to_string(), now + 1200));
+        }
+    }
+
+    /// Takes `amount` of the gauge away (taken down).
+    pub fn lose(&mut self, amount: f32) {
+        self.gauge = (self.gauge - amount).max(0.0);
+    }
+
+    pub fn is_boosting(&self) -> bool {
+        self.boosting
+    }
+
     pub fn stop(&mut self) {
         if self.boosting {
             if self.vehicle != 0 {

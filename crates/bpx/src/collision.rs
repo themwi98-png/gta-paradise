@@ -172,15 +172,15 @@ pub fn analyse_surfaces(game: &Path, step: usize) -> Result<()> {
 }
 
 /// Identity of a polygon for diffing: tag plus vertices rounded to 1 mm.
-fn poly_key(p: &bw::CollisionPoly) -> Vec<i32> {
+pub(crate) fn poly_key(p: &bw::CollisionPoly) -> Vec<i32> {
     let mut k = vec![p.tag as i32];
     k.extend(p.verts.iter().flat_map(|v| v.map(|c| (c * 1000.0).round() as i32)));
     k
 }
 
-fn load_poly_keys(path: &Path) -> Result<HashMap<u32, HashSet<Vec<i32>>>> {
+pub(crate) fn load_poly_keys(path: &Path) -> Result<HashMap<u32, HashSet<Vec<i32>>>> {
     let mut out: HashMap<u32, HashSet<Vec<i32>>> = HashMap::new();
-    for (unit, polys) in crate::colsrc::load(path)? {
+    for (unit, polys, _) in crate::colsrc::load(path)? {
         out.entry(unit).or_default().extend(polys.iter().map(poly_key));
     }
     Ok(out)
@@ -202,7 +202,7 @@ pub fn export(col: &Path, out: &Path, units: Option<&[u32]>, base: Option<&Path>
     let mut total_polys = 0usize;
     let mut out_of_box = 0usize;
 
-    for (unit, polys) in all_units {
+    for (unit, polys, poly_ids) in all_units {
         let name = format!("TRK_COL_{unit}");
         let name = name.as_str();
         if units.is_some_and(|u| !u.contains(&unit)) {
@@ -236,9 +236,10 @@ pub fn export(col: &Path, out: &Path, units: Option<&[u32]>, base: Option<&Path>
         // Group triangles by (surface id, generated?).
         let empty = HashSet::new();
         let unit_base = base_polys.as_ref().map(|m| m.get(&unit).unwrap_or(&empty));
-        // Per triangle, the polygon's index in its unit (glTF primitive
-        // extras "polygonIds"): the stable id the viewer's collision editor
-        // uses for deletions, which the GTA build then skips.
+        // Per triangle, the polygon's edit id (glTF primitive extras
+        // "polygonIds": its index in the unit's stock-plus-added list, see
+        // colsrc): the stable id the viewer's collision editor uses for
+        // deletions, which the GTA build then skips.
         let mut by_surface: BTreeMap<(u8, bool), (Vec<[f32; 3]>, Vec<u32>, Vec<u32>)> = BTreeMap::new();
         for (poly_index, p) in mesh.polys.iter().enumerate() {
             let tag = CollisionTag::decode(p.tag);
@@ -249,10 +250,10 @@ pub fn export(col: &Path, out: &Path, units: Option<&[u32]>, base: Option<&Path>
             let base = pos.len() as u32;
             pos.extend_from_slice(&p.verts);
             idx.extend([base, base + 1, base + 2]);
-            ids.push(poly_index as u32);
+            ids.push(poly_ids[poly_index]);
             if p.verts.len() == 4 {
                 idx.extend([base, base + 2, base + 3]);
-                ids.push(poly_index as u32);
+                ids.push(poly_ids[poly_index]);
             }
         }
 

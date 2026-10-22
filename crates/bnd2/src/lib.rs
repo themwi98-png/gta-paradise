@@ -9,7 +9,9 @@
 
 use anyhow::{bail, ensure, Context, Result};
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
+use std::sync::OnceLock;
 
 pub const FLAG_COMPRESSED: u32 = 0x1;
 pub const FLAG_HAS_DEBUG_DATA: u32 = 0x8;
@@ -42,6 +44,69 @@ pub struct Bundle {
     pub entries: Vec<Entry>,
     pub debug: HashMap<u64, DebugInfo>,
     raw: Vec<u8>,
+}
+
+/// Names for resources whose own bundle has none for them (a modded game
+/// can ship bundles without debug data), from the game's other bundles.
+static FALLBACK_NAMES: OnceLock<HashMap<u64, String>> = OnceLock::new();
+
+/// Sets the fallback names (once per run; see `debug_names`).
+pub fn set_fallback_names(names: HashMap<u64, String>) {
+    let _ = FALLBACK_NAMES.set(names);
+}
+
+/// Every resource name in the debug data of the bundles in `dir` (not its
+/// subfolders). Only each file's header and debug block are read.
+pub fn debug_names(dir: &Path) -> HashMap<u64, String> {
+    let mut out = HashMap::new();
+    let Ok(rd) = std::fs::read_dir(dir) else { return out };
+    for e in rd.flatten() {
+        let p = e.path();
+        if !p.is_file() {
+            continue;
+        }
+        let Ok(mut f) = std::fs::File::open(&p) else { continue };
+        let mut head = [0u8; 0x28];
+        if f.read_exact(&mut head).is_err() || &head[0..4] != b"bnd2" {
+            continue;
+        }
+        let (debug_offset, flags) = (u32_at(&head, 0x0C) as u64, u32_at(&head, 0x24));
+        if flags & FLAG_HAS_DEBUG_DATA == 0 || debug_offset == 0 || f.seek(SeekFrom::Start(debug_offset)).is_err() {
+            continue;
+        }
+        let mut xml = Vec::new();
+        let mut buf = vec![0u8; 1 << 16];
+        while let Ok(n) = f.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            match buf[..n].iter().position(|&c| c == 0) {
+                Some(end) => {
+                    xml.extend_from_slice(&buf[..end]);
+                    break;
+                }
+                None => xml.extend_from_slice(&buf[..n]),
+            }
+        }
+        for (id, d) in parse_debug_xml(&String::from_utf8_lossy(&xml)) {
+            out.entry(id).or_insert(d.name);
+        }
+    }
+    out
+}
+
+/// (id, type) of every resource in a bundle, reading only its header and
+/// entry table.
+pub fn entry_ids(path: &Path) -> Result<Vec<(u64, u32)>> {
+    let mut f = std::fs::File::open(path)?;
+    let mut head = [0u8; 0x28];
+    f.read_exact(&mut head)?;
+    ensure!(&head[0..4] == b"bnd2", "not a bnd2 bundle");
+    let (count, at) = (u32_at(&head, 0x10) as usize, u32_at(&head, 0x14) as u64);
+    f.seek(SeekFrom::Start(at))?;
+    let mut t = vec![0u8; count * 0x40];
+    f.read_exact(&mut t)?;
+    Ok((0..count).map(|i| (u64_at(&t, i * 0x40), u32_at(&t, i * 0x40 + 0x38))).collect())
 }
 
 pub fn u16_at(b: &[u8], o: usize) -> u16 {
@@ -121,8 +186,9 @@ impl Bundle {
         self.entries.iter().find(|e| e.id == id)
     }
 
+    /// A resource's debug name: from this bundle, else from the fallback names.
     pub fn name_of(&self, id: u64) -> Option<&str> {
-        self.debug.get(&id).map(|d| d.name.as_str())
+        self.debug.get(&id).map(|d| d.name.as_str()).or_else(|| FALLBACK_NAMES.get()?.get(&id).map(String::as_str))
     }
 
     /// Returns the (decompressed) bytes of one memory chunk of a resource.

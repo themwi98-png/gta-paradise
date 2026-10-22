@@ -37,9 +37,13 @@ INSTALLING
 3. It finds your games and CodeWalker by itself. If one isn't found (or the
    wrong one is), type its folder or press Browse... to pick it. Green ticks
    mean everything is ready.
-4. Press Install. The first install takes about 15-20 minutes: it converts
+4. Pick the map: Paradise City, or GTA's own Los Santos with only the
+   Burnout driving (run the setup again to switch).
+5. Press Install. The first install takes about 15-20 minutes: it converts
    the whole city. Later installs (after an update) only redo what changed.
-5. Start GTA V and load story mode.
+6. Add -scofflineonly -nobattleye to GTA V's launch options (Steam: right-
+   click GTA V > Properties > Launch options).
+7. Start GTA V and load story mode.
 
 
 UPDATING

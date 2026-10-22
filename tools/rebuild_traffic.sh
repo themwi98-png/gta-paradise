@@ -23,6 +23,8 @@ $CW convert out/gta_paths_xml out/gta_paths
 # Burnout's props (lamp posts, traffic lights, bins...) as GTA props.
 [ -f out/props/gta_archetypes.csv ] || { mkdir -p out/props; dotnet tools/cwconv/bin/Release/net8.0-windows/cwconv.dll archetypes "${GTA_DIR:-../Grand Theft Auto V}" "x64*.rpf" "levels/gta5/props/" out/props/gta_archetypes.csv; }
 ./target/release/bpx gta-props "${GAME_DIR:-../Burnout Paradise Remastered}" out/gta_meta_xml "$@" --col "${PROPS_COL:-tools/collision/paradise_extra.pcx}"
+# Junctions (traffic lights, give way) for the plugin and the viewer.
+./target/release/bpx gta-junctions "$GAME" out/traffic "$@" --props out/props/paradise_props.csv
 rm -rf out/gta_meta out/dlc
 $CW convert out/gta_meta_xml out/gta_meta
 $CW pack bpparadise out/dlc out/gta_col bpparadise_vis=out/gta_vis bpparadise_metadata=out/gta_meta:meta

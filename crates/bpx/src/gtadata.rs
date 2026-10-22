@@ -35,6 +35,35 @@ pub const GRIP_DEFAULT: f64 = 1.2;
 /// Brake multiplier when none is given (the player's `@car_brakes`).
 pub const BRAKES_DEFAULT: f64 = 2.5;
 
+/// HF_TYRES_CAN_CLIP in a vehicle's strHandlingFlags (hex): the tyres may
+/// sink into the ground and kerbs instead of the car being lifted over every
+/// bump. Rockstar sets it on a few low cars.
+const HF_TYRES_CAN_CLIP: u32 = 0x2_0000;
+
+/// Sets HF_TYRES_CAN_CLIP in every `<strHandlingFlags>`; returns the new
+/// text and how many vehicles gained it.
+fn set_tyres_clip(text: &str) -> (String, usize) {
+    const OPEN: &str = "<strHandlingFlags>";
+    let mut out = String::with_capacity(text.len());
+    let mut n = 0;
+    let mut rest = text;
+    while let Some(i) = rest.find(OPEN) {
+        let (head, tail) = rest.split_at(i + OPEN.len());
+        out.push_str(head);
+        let end = tail.find('<').unwrap_or(tail.len());
+        match u32::from_str_radix(tail[..end].trim(), 16) {
+            Ok(flags) if flags & HF_TYRES_CAN_CLIP == 0 => {
+                out.push_str(&format!("{:X}", flags | HF_TYRES_CAN_CLIP));
+                n += 1;
+            }
+            _ => out.push_str(&tail[..end]),
+        }
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    (out, n)
+}
+
 /// How much harder crashes hit and how much faster cars go (Rockstar's
 /// values average about 0.8 for deformation, 1.0 for collision and 1.5 for
 /// engine damage).
@@ -105,8 +134,10 @@ fn scale_handling(text: &str, grip: f64, brakes: f64) -> (String, usize) {
     (out, n)
 }
 
-/// `bpx handling <handling_src-dir> <out-dir> [--grip x] [--brakes x]`: Rockstar's handling files
-/// with the fields in HANDLING scaled, at the paths update.rpf uses:
+/// `bpx handling <handling_src-dir> <out-dir> [--grip x] [--brakes x] [--tyres-clip on|off]`:
+/// Rockstar's handling files with the fields in HANDLING scaled (and with
+/// `--tyres-clip on`, HF_TYRES_CAN_CLIP for every vehicle), at the paths
+/// update.rpf uses:
 ///     common/data/handling.meta                     base-game vehicles
 ///     dlc_patch/<pack>/common/data/handling.meta    each DLC pack's vehicles
 /// (update.rpf's dlc_patch folder overrides a pack's files; where Rockstar
@@ -114,7 +145,7 @@ fn scale_handling(text: &str, grip: f64, brakes: f64) -> (String, usize) {
 ///     _update/update/update.rpf/common/data/handling.meta
 ///     _update/update/update.rpf/dlc_patch/<pack>/common/data/handling.meta
 ///     <pack>/handling.meta
-pub fn handling(src: &Path, out: &Path, grip: f64, brakes: f64) -> Result<()> {
+pub fn handling(src: &Path, out: &Path, grip: f64, brakes: f64, tyres_clip: bool) -> Result<()> {
     let upd = src.join("_update/update/update.rpf");
     let mut files = vec![(upd.join("common/data/handling.meta"), out.join("common/data/handling.meta"))];
     let mut packs: Vec<PathBuf> = std::fs::read_dir(src)?.filter_map(|e| Some(e.ok()?.path())).collect();
@@ -128,15 +159,20 @@ pub fn handling(src: &Path, out: &Path, grip: f64, brakes: f64) -> Result<()> {
         let patch = upd.join(&rel);
         files.push((if patch.is_file() { patch } else { d.join("handling.meta") }, out.join(rel)));
     }
-    let mut total = 0;
+    let (mut total, mut clip) = (0, 0);
     for (s, t) in &files {
         let text = std::fs::read_to_string(s).with_context(|| format!("reading {}", s.display()))?;
-        let (text, n) = scale_handling(&text, grip, brakes);
+        let (mut text, n) = scale_handling(&text, grip, brakes);
+        if tyres_clip {
+            let (t, c) = set_tyres_clip(&text);
+            text = t;
+            clip += c;
+        }
         std::fs::create_dir_all(t.parent().unwrap())?;
         std::fs::write(t, text)?;
         total += n;
     }
-    println!("handling: {} files, {total} values scaled -> {}", files.len(), out.display());
+    println!("handling: {} files, {total} values scaled, tyres can clip on {clip} more vehicles -> {}", files.len(), out.display());
     Ok(())
 }
 
@@ -457,5 +493,73 @@ pub fn ground_materials(orig: &Path, out: &Path) -> Result<()> {
     anyhow::ensure!(!changed.is_empty(), "{}: no material rows found", orig.display());
     std::fs::write(out, lines.concat())?;
     println!("materials: {} ground types no longer slow cars: {}", changed.len(), changed.join(", "));
+    Ok(())
+}
+
+/// Vehicle types offered in the junkyard: what drives on roads.
+const ROAD_TYPES: [&str; 6] = ["VEHICLE_TYPE_CAR", "VEHICLE_TYPE_BIKE", "VEHICLE_TYPE_QUADBIKE", "VEHICLE_TYPE_AMPHIBIOUS_AUTOMOBILE", "VEHICLE_TYPE_AMPHIBIOUS_QUADBIKE", "VEHICLE_TYPE_SUBMARINECAR"];
+
+/// `bpx gta-cars <src-dir> <out-file>`: every road vehicle's model name from
+/// the vehicles.meta files anywhere under `src-dir` (the base game's and each
+/// DLC pack's, extracted by the setup), one per line, for the junkyard's car
+/// list in paradise.asi. Vehicles named in gen9_exclusive_assets_vehicles.meta
+/// are left out: they're listed in Legacy's files but only Enhanced can
+/// create them (the Coil Cyclone II and four others).
+pub fn cars(src: &Path, out: &Path) -> Result<()> {
+    fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+        for e in std::fs::read_dir(dir)? {
+            let p = e?.path();
+            if p.is_dir() {
+                walk(&p, files)?;
+            } else if p.file_name().is_some_and(|n| n.eq_ignore_ascii_case("vehicles.meta") || n.eq_ignore_ascii_case("gen9_exclusive_assets_vehicles.meta")) {
+                files.push(p);
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(src, &mut files)?;
+    let tag = |item: &str, name: &str| -> Option<String> {
+        let open = format!("<{name}>");
+        let start = item.find(&open)? + open.len();
+        Some(item[start..start + item[start..].find('<')?].trim().to_string())
+    };
+    let mut models = std::collections::BTreeSet::new();
+    let mut skipped = 0;
+    let mut enhanced_only = HashSet::new();
+    for f in &files {
+        let text = std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?;
+        if !f.file_name().is_some_and(|n| n.eq_ignore_ascii_case("vehicles.meta")) {
+            if let Some(list) = text.find("<VehicleModels>").and_then(|i| Some(&text[i..i + text[i..].find("</VehicleModels>")?])) {
+                enhanced_only.extend(list.split("<Item>").skip(1).filter_map(|it| Some(it[..it.find('<')?].trim().to_ascii_lowercase())));
+            }
+            continue;
+        }
+        let Some(list) = text.find("<InitDatas>").map(|i| &text[i..]) else { continue };
+        // Vehicles hold nested <Item>s, so each one is taken as the text from
+        // its <modelName> to the next vehicle's.
+        for item in list.split("<modelName>").skip(1) {
+            let item = format!("<modelName>{item}");
+            let (Some(model), Some(kind)) = (tag(&item, "modelName"), tag(&item, "type")) else { continue };
+            if ROAD_TYPES.contains(&kind.as_str()) {
+                models.insert(model.to_ascii_lowercase());
+            } else {
+                skipped += 1;
+            }
+        }
+    }
+    let before = models.len();
+    models.retain(|m| !enhanced_only.contains(m));
+    let dropped = before - models.len();
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut txt = String::from("# road vehicle model names from GTA's vehicles.meta files (bpx gta-cars)\n");
+    for m in &models {
+        txt.push_str(m);
+        txt.push('\n');
+    }
+    std::fs::write(out, txt)?;
+    println!("cars: {} road vehicles from {} vehicles.meta files ({skipped} other vehicles left out, {dropped} Enhanced-only)", models.len(), files.iter().filter(|f| f.file_name().is_some_and(|n| n.eq_ignore_ascii_case("vehicles.meta"))).count());
     Ok(())
 }

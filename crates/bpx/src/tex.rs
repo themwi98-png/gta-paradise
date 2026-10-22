@@ -35,6 +35,33 @@ fn mip0_size(t: &Texture) -> Option<usize> {
     }
 }
 
+/// The texture without its mip levels larger than `max` (for distant
+/// stand-ins): the smaller levels are kept as they are, still compressed.
+/// Volume textures and unknown formats come back unchanged.
+pub fn shrink(t: &Texture, max: u32) -> Texture {
+    let level = |w: u32, h: u32| -> Option<usize> {
+        let (w, h) = (w.max(1) as usize, h.max(1) as usize);
+        match block_bytes(t.dxgi_format) {
+            Some(bb) => Some(w.div_ceil(4) * h.div_ceil(4) * bb),
+            None => bytes_per_pixel(t.dxgi_format).map(|bpp| w * h * bpp),
+        }
+    };
+    let (mut w, mut h, mut mips, mut off) = (t.width, t.height, t.mips, 0usize);
+    if t.depth > 1 || level(w, h).is_none() {
+        return t.clone();
+    }
+    while mips > 1 && (w > max || h > max) {
+        off += level(w, h).unwrap_or(0);
+        w = (w / 2).max(1);
+        h = (h / 2).max(1);
+        mips -= 1;
+    }
+    if off >= t.data.len() {
+        return t.clone();
+    }
+    Texture { width: w, height: h, mips, data: t.data[off..].to_vec(), ..t.clone() }
+}
+
 /// Writes a DDS with a DX10 extension header, which can describe any DXGI
 /// format and is understood by CodeWalker, Blender and texconv.
 pub fn write_dds(t: &Texture, path: &Path) -> Result<()> {

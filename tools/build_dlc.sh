@@ -53,6 +53,9 @@ $CW pack bpparadise out/dlc out/gta_col bpparadise_vis=out/gta_vis bpparadise_me
 ./target/release/bpx gta-paths "${GAME_DIR:-../Burnout Paradise Remastered}" out/gta_paths_xml "$@"
 rm -rf out/gta_paths
 $CW convert out/gta_paths_xml out/gta_paths
+# Junctions (traffic lights, give way) for the plugin and the viewer.
+./target/release/bpx gta-junctions "${GAME_DIR:-../Burnout Paradise Remastered}" out/traffic "$@" --props out/props/paradise_props.csv
+./target/release/bpx gta-shops "${GAME_DIR:-../Burnout Paradise Remastered}" out/traffic "$@"
 
 # Pedestrian navmesh: Recast-built tiles from the collision, plus GTA's own
 # vehicle navmeshes (trains, boats, trailers), installed as navmeshes0.rpf.

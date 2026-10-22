@@ -204,8 +204,8 @@ pub fn export_collision(col: &Path, out: &Path, opts: &Options) -> Result<()> {
     let mut facing = Facing::default();
     let mut repair_stats = repair::Stats::default();
     let mut overlay = Overlay::default();
-    for (unit, polys) in units {
-        let polys = edits.polys(unit, polys);
+    for (unit, polys, ids) in units {
+        let polys = edits.polys(unit, polys, &ids);
         // Gather the unit's triangles into one welded vertex pool, so seams
         // between Burnout's separate polygon soups can be repaired.
         let mut pool = repair::Pool::new(WELD_TOLERANCE);

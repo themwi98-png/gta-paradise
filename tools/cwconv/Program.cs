@@ -51,6 +51,9 @@ try
         "sample" => Sample(args[1], args[2], args[3], args[4], args.Length > 5 ? int.Parse(args[5]) : 5, args.Length > 6 ? args[6] : ""),
         "extract" => Extract(args[1], args[2], args[3]),
         "ybninfo" => YbnInfo(args[1]),
+        "yddinfo" => YddInfo(args[1]),
+        "yddnames" => YddNames(args[1], args[2]),
+        "yndheur" => YndHeur(args[1]),
         "list" => List(args[1], args.Length > 2 ? args[2] : null),
         "extents" => Extents(args[1], args[2]),
         "pack" => Pack(args[1], args[2], args.Skip(3).ToArray()),
@@ -99,6 +102,7 @@ static int Convert(string input, string outDir)
             // fpathin is the folder holding referenced assets (e.g. .dds textures for .ydr).
             var data = XmlMeta.GetData(doc, format, Path.GetDirectoryName(Path.GetFullPath(f)));
             if (data == null) throw new Exception("CodeWalker returned no data");
+            if (format == MetaFormat.Ydd) data = FixYddNames(data, doc, outName);
             Directory.CreateDirectory(Path.GetDirectoryName(dest));
             File.WriteAllBytes(dest, data);
             ok++;
@@ -477,6 +481,8 @@ static int ToXml(string file, string outDir)
         case ".ynd": xml = MetaXml.GetXml(RpfFile.GetFile<YndFile>(entry, data), out fname); break;
         case ".ybn": xml = MetaXml.GetXml(RpfFile.GetFile<YbnFile>(entry, data), out fname); break;
         case ".ymap": xml = MetaXml.GetXml(RpfFile.GetFile<YmapFile>(entry, data), out fname); break;
+        case ".ydd": xml = MetaXml.GetXml(RpfFile.GetFile<YddFile>(entry, data), out fname, outDir); break;
+        case ".ymt": xml = MetaXml.GetXml(RpfFile.GetFile<YmtFile>(entry, data), out fname); break;
         default: throw new ArgumentException($"unsupported type {name}");
     }
     Directory.CreateDirectory(outDir);
@@ -797,7 +803,7 @@ static int List(string rpfPath, string gtaDir)
             try { RpfFile.GetFile<YbnFile>(e, e.File.ExtractFile(e)); }
             catch (Exception ex) { bad++; Console.Error.WriteLine($"BAD {e.Path}: {ex.Message}"); }
         }
-        if (files <= 8) Console.WriteLine($"{e.Path} ({e.GetFileSize()} bytes)");
+        if (files <= 8 || Environment.GetEnvironmentVariable("CWCONV_LIST_ALL") == "1") Console.WriteLine($"{e.Path} ({e.GetFileSize()} bytes)");
     }
     Console.WriteLine($"{files} files, {bad} unreadable");
     return bad == 0 ? 0 : 2;
@@ -835,6 +841,106 @@ static int Extents(string gtaDir, string outCsv)
 }
 
 // Summarises a binary .ybn: per child bounds type, counts, BVH presence.
+// Drawables named hash_XXXXXXXX in a drawable dictionary's XML get exactly
+// that name hash (CodeWalker would hash the text itself), and the dictionary
+// is sorted by hash, as the game's are (e.g. its minimap tiles).
+static byte[] FixYddNames(byte[] data, XmlDocument doc, string name)
+{
+    var wanted = new List<uint?>();
+    foreach (XmlNode item in doc.DocumentElement!.SelectNodes("Item")!)
+    {
+        var text = item.SelectSingleNode("Name")?.InnerText ?? "";
+        var m = System.Text.RegularExpressions.Regex.Match(text, "^hash_([0-9A-Fa-f]{8})$");
+        wanted.Add(m.Success ? System.Convert.ToUInt32(m.Groups[1].Value, 16) : null);
+    }
+    if (!wanted.Any(w => w != null)) return data;
+    var raw = data;
+    var entry = RpfFile.CreateResourceFileEntry(ref raw, 0);
+    raw = ResourceBuilder.Decompress(raw);
+    entry.Name = name;
+    var ydd = RpfFile.GetFile<YddFile>(entry, raw);
+    var dict = ydd.DrawableDict;
+    var hashes = dict.Hashes.ToArray();
+    var items = dict.Drawables.data_items;
+    if (hashes.Length != wanted.Count || items.Length != wanted.Count)
+        throw new Exception($"{name}: {hashes.Length} drawables built from {wanted.Count} in the XML");
+    for (int i = 0; i < hashes.Length; i++) if (wanted[i] is uint h) hashes[i] = h;
+    var order = Enumerable.Range(0, hashes.Length).OrderBy(i => hashes[i]).ToArray();
+    dict.Hashes = order.Select(i => hashes[i]).ToArray();
+    dict.Drawables.data_items = order.Select(i => items[i]).ToArray();
+    return ydd.Save();
+}
+
+// Compares a ynd's stored node heuristic (Flags3 bits 1-7) with CodeWalker's
+// RecalculateHeuristic, to see whether it reproduces Rockstar's.
+static int YndHeur(string path)
+{
+    var data = File.ReadAllBytes(path);
+    var entry = RpfFile.CreateResourceFileEntry(ref data, 0);
+    data = ResourceBuilder.Decompress(data);
+    entry.Name = Path.GetFileName(path);
+    var ynd = RpfFile.GetFile<YndFile>(entry, data);
+    int same = 0, diff = 0;
+    foreach (var n in ynd.Nodes.Take(4000))
+    {
+        int stored = n.HeuristicValue;
+        n.RecalculateHeuristic();
+        if (n.HeuristicValue == stored) same++; else { if (diff < 8) Console.WriteLine($"node {n.NodeID} pos {n.Position} stored {stored} recalculated {n.HeuristicValue}"); diff++; }
+    }
+    Console.WriteLine($"{same} same, {diff} different");
+    return 0;
+}
+
+// Writes every drawable dictionary's entries in <dir> to a CSV (tile, name
+// hash, bounds): GTA's minimap tiles, whose drawables the game looks up by
+// these exact names (bpx gta-minimap --names).
+static int YddNames(string dir, string outCsv)
+{
+    using var w = new StreamWriter(outCsv);
+    w.WriteLine("tile,hash,minx,miny,minz,maxx,maxy,maxz");
+    int n = 0;
+    foreach (var path in Directory.GetFiles(dir, "*.ydd").OrderBy(p => p))
+    {
+        var data = File.ReadAllBytes(path);
+        var entry = RpfFile.CreateResourceFileEntry(ref data, 0);
+        data = ResourceBuilder.Decompress(data);
+        entry.Name = Path.GetFileName(path);
+        var ydd = RpfFile.GetFile<YddFile>(entry, data);
+        var tile = Path.GetFileNameWithoutExtension(path);
+        if (tile.StartsWith("minimap_")) tile = tile.Substring(8);
+        var hashes = ydd.DrawableDict.Hashes;
+        var drawables = ydd.DrawableDict.Drawables.data_items;
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        for (int i = 0; i < drawables.Length; i++)
+        {
+            var (lo, hi) = (drawables[i].BoundingBoxMin, drawables[i].BoundingBoxMax);
+            w.WriteLine(string.Format(ci, "{0},{1:X8},{2},{3},{4},{5},{6},{7}", tile, hashes[i], lo.X, lo.Y, lo.Z, hi.X, hi.Y, hi.Z));
+            n++;
+        }
+    }
+    Console.WriteLine($"{n} drawables -> {outCsv}");
+    return 0;
+}
+
+// Prints a drawable dictionary's entries: name hash, and each drawable's
+// bounds (e.g. GTA's minimap tiles, whose names CodeWalker doesn't know).
+static int YddInfo(string path)
+{
+    var data = File.ReadAllBytes(path);
+    var entry = RpfFile.CreateResourceFileEntry(ref data, 0);
+    data = ResourceBuilder.Decompress(data);
+    entry.Name = Path.GetFileName(path);
+    var ydd = RpfFile.GetFile<YddFile>(entry, data);
+    var hashes = ydd.DrawableDict.Hashes;
+    var drawables = ydd.DrawableDict.Drawables.data_items;
+    for (int i = 0; i < drawables.Length; i++)
+    {
+        var d = drawables[i];
+        Console.WriteLine($"{hashes[i]:X8} {d.BoundingBoxMin} {d.BoundingBoxMax}");
+    }
+    return 0;
+}
+
 static int YbnInfo(string path)
 {
     var ybn = new YbnFile();

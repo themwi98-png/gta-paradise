@@ -17,11 +17,19 @@ const TEXTURE_BUNDLES: &[&str] = &[
     "WORLDTEX3.BIN",
     "GLOBALTEXTUREDICTIONARY.BIN",
     "MASSIVETEXTUREDICTIONARY.BIN",
+    // Distant scenery and low-detail stand-ins (backdrops).
+    "GLOBALBACKDROPS.BNDL",
 ];
 
 pub struct TextureIndex {
     bundles: Vec<Bundle>,
     by_id: HashMap<u64, usize>,
+    /// Which bundle files hold each material and texture state, for a track
+    /// unit that uses one it doesn't carry itself (a modded map's units do),
+    /// and those opened.
+    materials: HashMap<u64, PathBuf>,
+    texture_states: HashMap<u64, Vec<PathBuf>>,
+    opened: std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<Bundle>>>,
 }
 
 impl TextureIndex {
@@ -39,7 +47,67 @@ impl TextureIndex {
             }
             bundles.push(b);
         }
-        Ok(TextureIndex { bundles, by_id })
+        // Every bundle's materials, and the track units that keep textures
+        // of their own (a modded map's can).
+        let mut files: Vec<PathBuf> = std::fs::read_dir(game)?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_file()).collect();
+        files.sort();
+        let mut materials = HashMap::new();
+        let mut texture_states: HashMap<u64, Vec<PathBuf>> = HashMap::new();
+        let mut local = 0;
+        for p in files {
+            let Ok(ids) = bnd2::entry_ids(&p) else { continue };
+            for &(id, ty) in &ids {
+                if ty == types::MATERIAL {
+                    materials.entry(id).or_insert_with(|| p.clone());
+                } else if ty == types::TEXTURE_STATE {
+                    texture_states.entry(id).or_default().push(p.clone());
+                }
+            }
+            let is_unit = p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("TRK_UNIT") && n.ends_with("_GR.BNDL"));
+            if !is_unit || !ids.iter().any(|&(_, ty)| ty == types::TEXTURE) {
+                continue;
+            }
+            let b = Bundle::open(&p)?;
+            for e in b.entries.iter().filter(|e| e.type_id == types::TEXTURE) {
+                by_id.entry(e.id).or_insert_with(|| {
+                    local += 1;
+                    bundles.len()
+                });
+            }
+            bundles.push(b);
+        }
+        if local > 0 {
+            eprintln!("textures: {local} kept in track units (a modded map)");
+        }
+        Ok(TextureIndex { bundles, by_id, materials, texture_states, opened: Default::default() })
+    }
+
+    fn open(&self, path: &PathBuf) -> Option<std::sync::Arc<Bundle>> {
+        let mut opened = self.opened.lock().ok()?;
+        if let Some(b) = opened.get(path) {
+            return Some(b.clone());
+        }
+        let b = std::sync::Arc::new(Bundle::open(path).ok()?);
+        opened.insert(path.clone(), b.clone());
+        Some(b)
+    }
+
+    /// The texture a texture state points at, from another bundle's copy of
+    /// it (a modded map's unit can lack the state, or its link).
+    pub fn texture_of_state(&self, ts: u64) -> Option<u64> {
+        for path in self.texture_states.get(&ts)? {
+            let Some(b) = self.open(path) else { continue };
+            let Some(t) = b.find(ts).and_then(|e| Res::load(&b, e).ok()).and_then(|r| bw::texture_state_texture(&r)) else { continue };
+            if self.get(t).is_some() {
+                return Some(t);
+            }
+        }
+        None
+    }
+
+    /// The bundle holding a material that isn't in the bundle using it.
+    pub fn material_bundle(&self, id: u64) -> Option<std::sync::Arc<Bundle>> {
+        self.open(self.materials.get(&id)?)
     }
 
     /// Short name of a texture, if it is in one of the texture bundles.
@@ -58,6 +126,8 @@ impl TextureIndex {
 const SAMPLER_TERRAIN_LAYER0: u32 = 0x39B8_7765;
 /// Road shaders' line-marking layer (alpha-tested, second UV set).
 pub const SAMPLER_LINE_LAYER: u32 = 0xC595_7B0C;
+/// Light map slots (tunnels; Big Surf's night roads).
+const LIGHT_MAP_SLOTS: &[u32] = &[0x45E5_E34D, 0xB2F3_0F83];
 /// Slot roles that are never a diffuse map: reflection cube map, specular,
 /// detail map, normal maps, illuminance map, light map, tint mask.
 const NON_DIFFUSE_SLOTS: &[u32] =
@@ -69,6 +139,9 @@ pub struct MaterialInfo {
     pub shader: String,
     pub diffuse: Option<u64>,
     pub line: Option<u64>,
+    /// Has a light map (Big Surf's night road shaders...): its meshes' second
+    /// UV set is the light map's, not the line layer's.
+    pub lightmapped: bool,
 }
 
 impl MaterialInfo {
@@ -242,6 +315,9 @@ impl<'a> Exporter<'a> {
     /// uses cube maps, normal, detail, specular or light maps as diffuse.
     pub fn material_info(&self, b: &Bundle, mat_id: u64) -> MaterialInfo {
         let mut info = MaterialInfo::default();
+        // A material the unit doesn't carry itself comes from the bundle that has it.
+        let other = if b.find(mat_id).is_none() { self.textures.material_bundle(mat_id) } else { None };
+        let b: &Bundle = other.as_deref().unwrap_or(b);
         let Some(e) = b.find(mat_id) else { return info };
         let Ok(r) = Res::load(b, e) else { return info };
         info.shader = bw::material_shader(&r)
@@ -249,13 +325,15 @@ impl<'a> Exporter<'a> {
             .map(|n| n.rsplit('/').next().unwrap_or(n).split(".fx").next().unwrap_or(n).to_string())
             .unwrap_or_default();
         let tex_of = |ts: Option<u64>| -> Option<u64> {
-            let ts_r = Res::load(b, b.find(ts?)?).ok()?;
-            bw::texture_state_texture(&ts_r).filter(|id| self.textures.get(*id).is_some())
+            let ts = ts?;
+            let here = b.find(ts).and_then(|e| Res::load(b, e).ok()).and_then(|r| bw::texture_state_texture(&r)).filter(|id| self.textures.get(*id).is_some());
+            here.or_else(|| self.textures.texture_of_state(ts))
         };
         let slots: Vec<(u32, Option<u64>)> = bw::material_samplers(&r).into_iter().map(|(h, ts)| (h, tex_of(ts))).collect();
         let slot = |h: u32| slots.iter().find(|s| s.0 == h).and_then(|s| s.1);
         info.diffuse = slot(bw::SAMPLER_DIFFUSE).or_else(|| slot(bw::SAMPLER_DIFFUSE_ROAD)).or_else(|| slot(SAMPLER_TERRAIN_LAYER0));
         info.line = slot(SAMPLER_LINE_LAYER);
+        info.lightmapped = slots.iter().any(|s| LIGHT_MAP_SLOTS.contains(&s.0));
         if info.diffuse.is_none() {
             let cands: Vec<(u64, String, u32)> = slots
                 .iter()
@@ -275,6 +353,20 @@ impl<'a> Exporter<'a> {
     /// Writes a texture's DDS/PNG on first use: (file stem, has alpha).
     pub fn texture(&mut self, id: u64) -> Option<(String, bool)> {
         self.texture_file(id)
+    }
+
+    /// A small copy of a texture for distant stand-ins (mip levels above
+    /// `max` dropped), written into `dir` as `<stem>_lod.dds`: (stem, has alpha).
+    pub fn texture_lod(&mut self, id: u64, max: u32, dir: &Path) -> Option<(String, bool)> {
+        let (b, e) = self.textures.get(id)?;
+        let t = tex::shrink(&bw::parse_texture(b, e).ok()?, max);
+        let stem = format!("{}_{:08X}_lod", short_name(b.name_of(id).unwrap_or("tex")), id as u32);
+        let path = dir.join(format!("{stem}.dds"));
+        if !path.exists() {
+            tex::write_dds(&t, &path).ok()?;
+        }
+        let alpha = tex::has_alpha(t.dxgi_format) || (matches!(t.dxgi_format, 70..=72) && tex::decode_rgba(&t).is_ok_and(|p| p.chunks(4).any(|px| px[3] < 128)));
+        Some((stem, alpha))
     }
 
     /// Decoded top mip of a texture: (width, height, RGBA8).

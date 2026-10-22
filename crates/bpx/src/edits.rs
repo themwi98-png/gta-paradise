@@ -25,7 +25,7 @@
 use anyhow::{Context, Result};
 use bpworld::traffic::{Section, StaticVehicle, Traffic};
 use bpworld as bw;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 pub const DEFAULT_COLLISION_EDITS: &str = "tools/edits/collision_edits.json";
@@ -58,12 +58,13 @@ impl CollisionEdits {
         Ok(Self { deleted })
     }
 
-    /// A unit's collision polygons with the deleted ones removed.
-    pub fn polys(&self, unit: u32, polys: Vec<bw::CollisionPoly>) -> Vec<bw::CollisionPoly> {
+    /// A unit's collision polygons with the deleted ones removed; `ids` are
+    /// the polygons' edit ids (colsrc::load).
+    pub fn polys(&self, unit: u32, polys: Vec<bw::CollisionPoly>, ids: &[u32]) -> Vec<bw::CollisionPoly> {
         if self.deleted.is_empty() {
             return polys;
         }
-        polys.into_iter().enumerate().filter(|(i, _)| !self.deleted.contains(&(unit, *i as u32))).map(|(_, p)| p).collect()
+        polys.into_iter().zip(ids).filter(|(_, id)| !self.deleted.contains(&(unit, **id))).map(|(p, _)| p).collect()
     }
 }
 
@@ -76,7 +77,7 @@ const DRAPE_STEP: f32 = 6.0;
 /// From one step to the next the road rises or falls at most this much (m).
 const DRAPE_CLIMB: f32 = 2.5;
 /// Collision the drawn lanes are laid on (BPX_COL overrides).
-const DEFAULT_COL: &str = "tools/collision/paradise_extra.pcx";
+pub const DEFAULT_COL: &str = "tools/collision/paradise_extra.pcx";
 
 /// Lays a drawn lane on the road surface: long straight bits are split into
 /// DRAPE_STEP steps and each step takes the collision floor nearest the
@@ -187,7 +188,7 @@ fn set_transform(m: &mut [f32; 16], pos: Option<[f32; 3]>, dir: Option<[f32; 2]>
 const DRAWN_TRAFFIC: u16 = 5;
 
 fn blank_section(rungs: Vec<[[f32; 3]; 2]>, speed: f32, traffic: u16) -> Section {
-    Section { rungs, forward: Vec::new(), backward: Vec::new(), left: Vec::new(), right: Vec::new(), speed, length: 0.0, turn_left_prob: 0, turn_right_prob: 0, vehicles_per_minute: traffic }
+    Section { rungs, forward: Vec::new(), backward: Vec::new(), left: Vec::new(), right: Vec::new(), speed, length: 0.0, turn_left_prob: 0, turn_right_prob: 0, vehicles_per_minute: traffic, stop_lines: Vec::new() }
 }
 
 impl TrafficEdits {
@@ -223,6 +224,8 @@ impl TrafficEdits {
                         r.swap(0, 1);
                     }
                     std::mem::swap(&mut sec.forward, &mut sec.backward);
+                    // Its stop line would now be at the wrong end.
+                    sec.stop_lines.clear();
                     reversed += 1;
                 }
                 if let Some(d) = e["shift"].as_f64().filter(|d| *d != 0.0) {
@@ -418,6 +421,51 @@ impl WaterEdits {
 }
 
 pub const DEFAULT_SIDEWALK_EDITS: &str = "tools/edits/sidewalk_edits.json";
+pub const DEFAULT_JUNCTION_EDITS: &str = "tools/edits/junction_edits.json";
+
+/// Junction changes from the viewer's Junctions panel:
+///
+/// ```json
+/// { "format": "paradise-junction-edits-v1",
+///   "off": ["L341e4", "A-1234_567"],
+///   "radius": { "A-1234_567": 18.5 },
+///   "added": [[x, y, z, radius], ...] }
+/// ```
+///
+/// `off` switches built-in junctions (Burnout's traffic lights, L + id, or
+/// ones found where lanes cross, A + position) off; `radius` resizes them;
+/// `added` are junctions marked by hand (GTA world position).
+#[derive(Default)]
+pub struct JunctionEdits {
+    pub off: HashSet<String>,
+    pub radius: HashMap<String, f32>,
+    pub added: Vec<[f32; 4]>,
+}
+
+impl JunctionEdits {
+    /// Loads the edits file if there is one (none: no changes).
+    pub fn load() -> Result<Self> {
+        let path = std::env::var_os("BPX_JUNCTION_EDITS").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(DEFAULT_JUNCTION_EDITS));
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?).with_context(|| format!("reading {}", path.display()))?;
+        let off = doc["off"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect();
+        let radius = doc["radius"].as_object().into_iter().flatten().filter_map(|(k, v)| Some((k.clone(), v.as_f64()? as f32))).collect();
+        let added = doc["added"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| {
+                let a = p.as_array()?;
+                Some([a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32, a.get(2)?.as_f64()? as f32, a.get(3)?.as_f64()? as f32])
+            })
+            .collect();
+        let edits = Self { off, radius, added };
+        eprintln!("junction edits: {} off, {} resized, {} added from {}", edits.off.len(), edits.radius.len(), edits.added.len(), path.display());
+        Ok(edits)
+    }
+}
 
 /// Drawn shapes (GTA world points, outline order) where the pedestrian
 /// navmesh's sidewalk (footpath) is taken away or added:
