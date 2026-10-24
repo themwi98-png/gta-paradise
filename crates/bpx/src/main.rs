@@ -45,7 +45,7 @@ const USAGE: &str = "usage:
   bpx collision <game-dir|WORLDCOL file> <out-dir> <unit|all> [unit...] [--base <WORLDCOL>]
   bpx surfaces <game-dir> [unit-step]   (report what each collision surface id is)
   bpx materials <game-dir> [unit-step]  (report material texture-slot roles per shader)
-  bpx gta-collision <game-dir|WORLDCOL file> <out-dir> [--offset x,y,z] [--scale s] [--heading deg] [--keep-walls] [--prefix p]
+  bpx gta-collision <game-dir|WORLDCOL file> <out-dir> [--offset x,y,z] [--scale s] [--heading deg] [--walls skip|vehicles|solid] [--prefix p]
       (GTA V .ybn.xml per unit; convert with tools/cwconv)
   bpx gta-test-platform <out-dir> <name> <x> <y> <top-z> [size]   (flat test collision slab)
   bpx gta-visual <game-dir> <assets-out> <meta-out> [--units 1,2,..|all] [--offset x,y,z] [--scale s] [--heading deg] [--lod-dist m] [--lod-far m|off] [--prefix p]
@@ -219,10 +219,10 @@ fn main() -> Result<()> {
     }
 }
 
-/// bpx gta-collision <col> <out-dir> [--offset x,y,z] [--scale s] [--heading deg] [--keep-walls] [--prefix p]
+/// bpx gta-collision <col> <out-dir> [--offset x,y,z] [--scale s] [--heading deg] [--walls skip|vehicles|solid] [--prefix p]
 fn gta_collision(args: &[String]) -> Result<()> {
     let mut placement = gta::Placement { offset: [0.0; 3], scale: 1.0, heading: 0.0 };
-    let mut keep_walls = false;
+    let mut walls = gta::Walls::Vehicles;
     let mut prefix = "bp_".to_string();
     let mut i = 2;
     while i < args.len() {
@@ -246,12 +246,20 @@ fn gta_collision(args: &[String]) -> Result<()> {
                 prefix = val()?.clone();
                 i += 1;
             }
-            "--keep-walls" => keep_walls = true,
+            "--walls" => {
+                walls = match val()?.as_str() {
+                    "skip" => gta::Walls::Skip,
+                    "vehicles" => gta::Walls::Vehicles,
+                    "solid" => gta::Walls::Solid,
+                    w => anyhow::bail!("--walls {w}: expected skip, vehicles or solid"),
+                };
+                i += 1;
+            }
             a => anyhow::bail!("unknown option {a}"),
         }
         i += 1;
     }
-    let opts = gta::Options { placement, keep_invisible_walls: keep_walls, prefix };
+    let opts = gta::Options { placement, invisible_walls: walls, prefix };
     gta::export_collision(&PathBuf::from(&args[0]), &PathBuf::from(&args[1]), &opts)
 }
 

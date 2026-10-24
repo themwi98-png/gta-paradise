@@ -39,9 +39,30 @@ impl Placement {
     }
 }
 
+/// What becomes of Burnout's invisible walls (the barriers that keep cars on
+/// the playable map).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Walls {
+    Skip,
+    /// Only vehicles hit them; peds, bullets and the camera pass through.
+    Vehicles,
+    /// Solid to everything, like any other wall.
+    Solid,
+}
+
+impl Walls {
+    fn name(self) -> &'static str {
+        match self {
+            Walls::Skip => "skip",
+            Walls::Vehicles => "vehicles",
+            Walls::Solid => "solid",
+        }
+    }
+}
+
 pub struct Options {
     pub placement: Placement,
-    pub keep_invisible_walls: bool,
+    pub invisible_walls: Walls,
     /// Prefix for output names; GTA file names must be globally unique.
     pub prefix: String,
 }
@@ -77,6 +98,17 @@ const TJUNCTION_TOLERANCE: f32 = 0.03;
 /// TEST_VEHICLE_WHEEL matters: vehicle wheels find the ground with it.
 const COMPOSITE_FLAGS1: &str = "MAP_WEAPON, MAP_DYNAMIC, MAP_ANIMAL, MAP_COVER, MAP_VEHICLE";
 const COMPOSITE_FLAGS2: &str = "VEHICLE_NOT_BVH, VEHICLE_BVH, PED, RAGDOLL, ANIMAL, ANIMAL_RAGDOLL, OBJECT, PLANT, PROJECTILE, EXPLOSION, FORKLIFT_FORKS, TEST_WEAPON, TEST_CAMERA, TEST_AI, TEST_SCRIPT, TEST_VEHICLE_WHEEL, GLASS";
+/// Vehicle-only collision. Rockstar's invisible road barriers (fwy_01_4,
+/// fwy_02_1, dt1_rd1_6 children) are MAP_VEHICLE; these are MAP_STAIRS, a
+/// type every vehicle includes but meets nowhere else, and include only
+/// vehicles: peds, bullets, the camera and wheel probes pass. paradise.asi's
+/// wallpass clears MAP_STAIRS from aircraft and boats' include flags in the
+/// physics level, so they pass too, while the map (MAP_VEHICLE) still stops
+/// them. Collision tests each side's include against the other's type.
+const VEHICLE_FLAGS1: &str = "MAP_STAIRS";
+const VEHICLE_FLAGS2: &str = "VEHICLE_NOT_BVH, VEHICLE_BVH";
+/// Overlay kind of vehicle-only walls (0 floor, 1 wall).
+const KIND_VEHICLE_WALL: u8 = 2;
 
 #[derive(Default)]
 struct Facing {
@@ -104,6 +136,8 @@ struct Child {
     index: HashMap<[u32; 3], u32>,
     /// (gta material index, v1, v2, v3)
     tris: Vec<(u16, u32, u32, u32)>,
+    /// Vehicle-only collision (VEHICLE_FLAGS1/2).
+    vehicle_only: bool,
 }
 
 impl Child {
@@ -170,8 +204,9 @@ fn write_ybn_xml(children: &[Child]) -> String {
         s.push_str("   <Item type=\"GeometryBVH\">\n");
         bounds_header(&mut s, "    ", lo, hi, 0.005);
         s.push_str("    <CompositeTransform>\n     1 0 0 0\n     0 1 0 0\n     0 0 1 0\n     0 0 0 1\n    </CompositeTransform>\n");
-        let _ = writeln!(s, "    <CompositeFlags1>{COMPOSITE_FLAGS1}</CompositeFlags1>");
-        let _ = writeln!(s, "    <CompositeFlags2>{COMPOSITE_FLAGS2}</CompositeFlags2>");
+        let (flags1, flags2) = if ch.vehicle_only { (VEHICLE_FLAGS1, VEHICLE_FLAGS2) } else { (COMPOSITE_FLAGS1, COMPOSITE_FLAGS2) };
+        let _ = writeln!(s, "    <CompositeFlags1>{flags1}</CompositeFlags1>");
+        let _ = writeln!(s, "    <CompositeFlags2>{flags2}</CompositeFlags2>");
         let _ = writeln!(s, "    {}", v3("GeometryCenter", centre));
         s.push_str("    <UnkFloat1 value=\"0\" />\n    <UnkFloat2 value=\"0.0025\" />\n");
 
@@ -201,6 +236,22 @@ fn write_ybn_xml(children: &[Child]) -> String {
     s
 }
 
+/// Appends `tris` to `children`, starting a new child when the last one is
+/// full or of the other kind.
+fn fill_children(children: &mut Vec<Child>, verts: &[[f32; 3]], tris: &[repair::Tri], vehicle_only: bool) {
+    for t in tris {
+        let full = children.last().map_or(true, |c| {
+            c.vehicle_only != vehicle_only || c.verts.len() + 3 > MAX_CHILD_VERTS || c.tris.len() + 1 > MAX_CHILD_POLYS
+        });
+        if full {
+            children.push(Child { vehicle_only, ..Child::default() });
+        }
+        let ch = children.last_mut().unwrap();
+        let [a, b, c] = t.v.map(|i| ch.vert(verts[i as usize]));
+        ch.tris.push((t.mat, a, b, c));
+    }
+}
+
 pub fn export_collision(col: &Path, out: &Path, opts: &Options) -> Result<()> {
     let units = crate::colsrc::load(col)?;
     std::fs::create_dir_all(out)?;
@@ -214,6 +265,8 @@ pub fn export_collision(col: &Path, out: &Path, opts: &Options) -> Result<()> {
     let mut repair_stats = repair::Stats::default();
     let mut wall_stats = repair::WallStats::default();
     let mut overlay = Overlay::default();
+    let mut vehicle_wall_stats = repair::WallStats::default();
+    let (mut vehicle_walls_in, mut vehicle_walls_out) = (0usize, 0usize);
     for (unit, polys, ids) in units {
         let generated: Vec<bool> = ids.iter().map(|&id| (crate::fill::FILL_ID..crate::colsrc::MODDED_ID).contains(&id)).collect();
         let (polys, generated): (Vec<_>, Vec<bool>) = polys.into_iter().zip(ids.iter().zip(generated)).filter(|(_, (&id, _))| !edits.is_deleted(unit, id)).map(|(p, (_, g))| (p, g)).unzip();
@@ -221,17 +274,34 @@ pub fn export_collision(col: &Path, out: &Path, opts: &Options) -> Result<()> {
         // between Burnout's separate polygon soups can be repaired.
         let mut pool = repair::Pool::new(WELD_TOLERANCE);
         let mut tris: Vec<repair::Tri> = Vec::new();
+        // Vehicle-only walls are kept apart: their own pool, so they don't
+        // join the map's surfaces, and their own children.
+        let mut wall_pool = repair::Pool::new(WELD_TOLERANCE);
+        let mut walls: Vec<repair::Tri> = Vec::new();
         for (p, &gen) in polys.iter().zip(&generated) {
             let tag = CollisionTag::decode(p.tag);
             if tag.surface_id == bw::SURFACE_WATER {
                 *skipped.entry("water").or_default() += 1;
                 continue;
             }
-            if tag.surface_id == bw::SURFACE_INVISIBLE_WALL && !opts.keep_invisible_walls {
-                *skipped.entry("invisible_wall").or_default() += 1;
-                continue;
-            }
             let mat = bw::surface_gta_material_index(tag.surface_id);
+            if tag.surface_id == bw::SURFACE_INVISIBLE_WALL {
+                match opts.invisible_walls {
+                    Walls::Skip => {
+                        *skipped.entry("invisible_wall").or_default() += 1;
+                        continue;
+                    }
+                    Walls::Vehicles => {
+                        let idx: Vec<u32> = p.verts.iter().map(|&v| wall_pool.add(opts.placement.apply(v))).collect();
+                        walls.push(repair::Tri { mat, v: [idx[0], idx[1], idx[2]] });
+                        if idx.len() == 4 {
+                            walls.push(repair::Tri { mat, v: [idx[0], idx[2], idx[3]] });
+                        }
+                        continue;
+                    }
+                    Walls::Solid => {}
+                }
+            }
             let world: Vec<[f32; 3]> = p.verts.iter().map(|&v| opts.placement.apply(v)).collect();
             let idx: Vec<u32> = world.iter().map(|&v| pool.add(v)).collect();
             let mut push = |a: usize, b: usize, c: usize| {
@@ -276,17 +346,19 @@ pub fn export_collision(col: &Path, out: &Path, opts: &Options) -> Result<()> {
         tris.extend(kept);
         repair::spatial_sort(&pool.verts, &mut tris);
 
-        let mut children = vec![Child::default()];
-        for t in &tris {
-            let last = children.last().unwrap();
-            if last.verts.len() + 3 > MAX_CHILD_VERTS || last.tris.len() + 1 > MAX_CHILD_POLYS {
-                children.push(Child::default());
-            }
-            let ch = children.last_mut().unwrap();
-            let [a, b, c] = t.v.map(|i| ch.vert(pool.verts[i as usize]));
-            ch.tris.push((t.mat, a, b, c));
-        }
-        children.retain(|c| !c.tris.is_empty());
+        // No floors share their edges, so every one becomes a centred slab:
+        // solid from both sides (GTA's polygons are one-sided).
+        repair_stats.welded += std::mem::take(&mut wall_pool.welded);
+        repair::cleanup(&wall_pool.verts, &mut walls, &mut repair_stats);
+        overlay.add_kind(&wall_pool.verts, &walls, KIND_VEHICLE_WALL);
+        vehicle_walls_in += walls.len();
+        repair::solidify_walls(&mut wall_pool.verts, &mut walls, |_, _| true, WALL_THICKNESS, &mut vehicle_wall_stats);
+        repair::spatial_sort(&wall_pool.verts, &mut walls);
+        vehicle_walls_out += walls.len();
+
+        let mut children = Vec::new();
+        fill_children(&mut children, &pool.verts, &tris, false);
+        fill_children(&mut children, &wall_pool.verts, &walls, true);
         if children.is_empty() {
             continue;
         }
@@ -294,7 +366,8 @@ pub fn export_collision(col: &Path, out: &Path, opts: &Options) -> Result<()> {
         std::fs::write(out.join(format!("{name}.ybn.xml")), write_ybn_xml(&children))?;
         let (lo, hi) = bbox(children.iter().flat_map(|c| c.verts.iter().copied()));
         let tris: usize = children.iter().map(|c| c.tris.len()).sum();
-        manifest.push(json!({"name": name, "unit": unit, "min": lo, "max": hi, "children": children.len(), "triangles": tris}));
+        let vehicle_only: usize = children.iter().filter(|c| c.vehicle_only).map(|c| c.tris.len()).sum();
+        manifest.push(json!({"name": name, "unit": unit, "min": lo, "max": hi, "children": children.len(), "triangles": tris, "vehicle_only_triangles": vehicle_only}));
         files += 1;
         tris_total += tris;
     }
@@ -306,7 +379,7 @@ pub fn export_collision(col: &Path, out: &Path, opts: &Options) -> Result<()> {
         serde_json::to_vec_pretty(&json!({
             "source": col.display().to_string(),
             "placement": {"offset": p.offset, "scale": p.scale, "heading": p.heading},
-            "keep_invisible_walls": opts.keep_invisible_walls,
+            "invisible_walls": opts.invisible_walls.name(),
             "files": manifest,
         }))?,
     )?;
@@ -322,6 +395,11 @@ pub fn export_collision(col: &Path, out: &Path, opts: &Options) -> Result<()> {
     println!(
         "walls: {} triangles one-sided (closed, faced by their floors), {} made {WALL_THICKNESS} m slabs behind their face, {} centred slabs (no face known); {} cap triangles; {} surfaces with disagreeing floors",
         w.one_sided, w.slab_behind, w.slab_centred, w.caps, w.conflicts
+    );
+    println!(
+        "invisible walls ({}): {vehicle_walls_in} triangles made vehicle-only, {vehicle_walls_out} after making them {WALL_THICKNESS} m slabs ({} cap triangles)",
+        opts.invisible_walls.name(),
+        vehicle_wall_stats.caps
     );
     Ok(())
 }
@@ -360,7 +438,7 @@ pub fn export_test_platform(out: &Path, name: &str, top: [f32; 3], size: f32) ->
 /// Layout (little-endian): "PCOL", u32 version (1), f32 tile size, u32 tile
 /// count, then per tile {i32 tx, i32 ty, u32 first, u32 count}, then per
 /// triangle {9 x f32 vertex coords, u16 GTA material index, u8 kind
-/// (0 floor, 1 wall), u8 pad}.
+/// (0 floor, 1 wall, 2 vehicle-only wall), u8 pad}.
 #[derive(Default)]
 struct Overlay {
     tris: Vec<([[f32; 3]; 3], u16, u8)>,
@@ -375,6 +453,10 @@ impl Overlay {
             let kind = if unit_normal_z(p[0], p[1], p[2]).abs() >= FLOOR_MIN_NZ { 0 } else { 1 };
             self.tris.push((p, t.mat, kind));
         }
+    }
+
+    fn add_kind(&mut self, verts: &[[f32; 3]], tris: &[repair::Tri], kind: u8) {
+        self.tris.extend(tris.iter().map(|t| (t.v.map(|i| verts[i as usize]), t.mat, kind)));
     }
 
     fn write(&self, path: &Path) -> Result<()> {

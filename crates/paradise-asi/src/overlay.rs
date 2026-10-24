@@ -72,7 +72,9 @@ impl Overlay {
                 *v = f32_at(&b, r + k * 4);
             }
             let mat = u16::from_le_bytes([b[r + 36], b[r + 37]]);
-            let wall = b[r + 38] == 1;
+            // Kind 0 floor, 1 wall, 2 vehicle-only wall (Burnout's invisible walls).
+            let kind = b[r + 38];
+            let wall = kind >= 1;
             // Flat shading so slopes and steps are visible.
             let u = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
             let w = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
@@ -80,12 +82,16 @@ impl Overlay {
             let nl = (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt().max(1e-6);
             let lit = ((nrm[0] * sun[0] + nrm[1] * sun[1] + nrm[2] * sun[2]) / (nl * sun_len)).abs();
             let shade = 0.45 + 0.55 * lit;
-            let base = material_rgb(mat);
+            let base = if kind == 2 { [230.0, 40.0, 40.0] } else { material_rgb(mat) };
             let rgba = [
                 (base[0] * shade) as i32,
                 (base[1] * shade) as i32,
                 (base[2] * shade) as i32,
-                if wall { 110 } else { 150 },
+                match kind {
+                    2 => 70,
+                    1 => 110,
+                    _ => 150,
+                },
             ];
             tris.push(Tri { p, rgba, wall });
         }

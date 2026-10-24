@@ -83,6 +83,7 @@ mod spawnguard;
 mod switch;
 mod shv;
 mod takedown;
+mod wallpass;
 mod wreck;
 
 use natives as n;
@@ -681,6 +682,7 @@ extern "C" fn script_main() {
     let mut shops_on = settings.shops;
     let mut switcher = settings.paradise.then(switch::Switch::default);
     let mut switch_on = settings.switch;
+    let mut wallpass = settings.paradise.then(wallpass::WallPass::default);
 
     loop {
         if keys.pressed(VK_F4) {
@@ -809,6 +811,9 @@ extern "C" fn script_main() {
             }
             if let Some(sw) = switcher.as_mut() {
                 sw.update(switch_on, &mut gps, now);
+            }
+            if let Some(w) = wallpass.as_mut() {
+                w.update(n::get_vehicle_ped_is_in(ped), now);
             }
             perf.done(9);
             // A junkyard has the car (stopping it, or its menu is open), a
