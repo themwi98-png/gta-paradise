@@ -1407,3 +1407,88 @@ pub fn clear_gps_custom_route() {
     call(0x900086F371220B6F, args!(false, 0, 0)); // SET_GPS_CUSTOM_ROUTE_RENDER
     call(0xE6DE0561D9232A64, &[]);
 }
+
+// ---- Character switching ----
+
+pub fn get_player_switch_state() -> i32 {
+    ret_i32(call(0x470555300D10B2A5, &[]))
+}
+
+pub fn get_player_switch_type() -> i32 {
+    ret_i32(call(0xB3C94A90D9FC9E62, &[]))
+}
+
+pub fn is_switch_ready_for_descent() -> bool {
+    ret_bool(call(0xDFA80CB25D0A19B3, &[]))
+}
+
+pub fn allow_player_switch_descent() {
+    call(0xAD5FDF34B81BFE79, &[]);
+}
+
+/// Lets the switch's final swoop onto the new character start (it holds in
+/// state 8 until a script allows it).
+pub fn allow_player_switch_outro() {
+    call(0x74DE2E8739086740, &[]);
+}
+
+/// CHANGE_PLAYER_PED: the player takes over another ped.
+pub fn change_player_ped(ped: i32) {
+    call(0x048189FAC643DEEE, args!(player_id(), ped, false, false));
+}
+
+/// CLEAR_PED_TASKS (not _IMMEDIATELY, which would pull them out of the car).
+pub fn clear_ped_tasks(ped: i32) {
+    call(0xE1EF3C1216AFF2CD, args!(ped));
+}
+
+/// SET_ENTITY_LOAD_COLLISION_FLAG: collision streams in around the entity
+/// wherever the player is.
+pub fn set_entity_load_collision_flag(entity: i32, on: bool) {
+    call(0x0DC7CABAB1E9B67E, args!(entity, on, 1));
+}
+
+/// GET_FINAL_RENDERED_CAM_COORD: where the camera drawn this frame is.
+pub fn get_final_rendered_cam_coord() -> Vec3 {
+    unsafe { *(call(0xA200EB1EE790F448, &[]) as *const Vec3) }
+}
+
+/// SET_ENTITY_AS_NO_LONGER_NEEDED: the game may clean the entity up once
+/// it's out of sight.
+pub fn set_entity_as_no_longer_needed(entity: i32) {
+    let mut e = entity;
+    call(0xB736A491E64A32CF, args!(&mut e as *mut i32));
+}
+
+/// STOP_SCRIPTED_CONVERSATION: the dialogue a script started stops now.
+pub fn stop_scripted_conversation() {
+    call(0xD79DEEFB53455EBA, args!(false));
+}
+
+/// After a drunk scene: STOP_GAMEPLAY_CAM_SHAKING, SET_PED_IS_DRUNK off and
+/// RESET_PED_MOVEMENT_CLIPSET.
+pub fn sober_up(ped: i32) {
+    call(0x0EF93E9F3D08C178, args!(true));
+    call(0x95D2D383D5396B8A, args!(ped, false));
+    call(0xAA74EC0CB0AAEA2C, args!(ped, 0.0f32));
+}
+
+pub fn task_vehicle_drive_wander(ped: i32, vehicle: i32, speed: f32, style: i32) {
+    call(0x480142959D337D00, args!(ped, vehicle, speed, style));
+}
+
+pub fn set_entity_as_mission_entity(entity: i32) {
+    call(0xAD738C3085FE7E11, args!(entity, true, true));
+}
+
+pub fn set_player_control(on: bool) {
+    call(0x8D32347D6D4C40A2, args!(player_id(), on, 0));
+}
+
+pub fn display_radar(on: bool) {
+    call(0xA0EBB943C300E693, args!(on));
+}
+
+pub fn destroy_all_cams() {
+    call(0x8E5FB15663F79120, args!(false));
+}

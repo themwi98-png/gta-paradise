@@ -1,0 +1,9 @@
+{
+  "format": "paradise-collision-fixes-v1",
+  "about": "Fixes to Burnout's own collision, applied wherever collision is read (bpx colsrc). drop_water: the whole connected water sheet (surface 15) of that unit through the point (Burnout coordinates x, y, z; height within 1 m).",
+  "drop_water": [
+    { "unit": 38, "at": [-2125.95, 248.98, -3403.30], "note": "crash sheet over the basin sides above the lake (unit 306 has the real lake surface, 141.7)" },
+    { "unit": 38, "at": [-3556.06, 389.96, -3017.85], "note": "sheet over the upper stream basin; only a small stream there" },
+    { "unit": 38, "at": [-3145.16, 257.16, -2839.30], "note": "sheet over the stream below the waterfall" }
+  ]
+}

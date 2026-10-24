@@ -58,6 +58,11 @@ impl CollisionEdits {
         Ok(Self { deleted })
     }
 
+    /// Whether a polygon (unit and edit id, colsrc::load) was deleted.
+    pub fn is_deleted(&self, unit: u32, id: u32) -> bool {
+        self.deleted.contains(&(unit, id))
+    }
+
     /// A unit's collision polygons with the deleted ones removed; `ids` are
     /// the polygons' edit ids (colsrc::load).
     pub fn polys(&self, unit: u32, polys: Vec<bw::CollisionPoly>, ids: &[u32]) -> Vec<bw::CollisionPoly> {

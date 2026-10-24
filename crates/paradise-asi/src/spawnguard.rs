@@ -13,6 +13,10 @@
 //!   Spawns panel), and GTA's own parked-car generators and scenario spots
 //!   are switched off inside them too.
 //!
+//! GTA's character switch is left alone: the character switched to and
+//! their car are made by the switch's scripts at GTA's own place for them,
+//! which in Paradise is often mid-air; switch.rs moves them to a road.
+//!
 //! GTA's trains are switched off too: their tracks run through Los Santos,
 //! which in Paradise is the sky.
 //!
@@ -20,6 +24,7 @@
 //! how it was spawned) so the source can be found and taken out.
 
 use crate::natives as n;
+use crate::propshield::joaat;
 use crate::shv::{self, Vec3};
 use std::collections::HashSet;
 use std::io::Write as _;
@@ -45,6 +50,16 @@ pub struct SpawnGuard {
     last_scan: i32,
     applied: bool,
     log: Option<std::fs::File>,
+}
+
+/// The script that made `e`, when `e` is GTA's character switch's: made by one
+/// of its scripts, or one of the three characters.
+fn switch_made(e: i32) -> Option<String> {
+    let script = n::get_entity_script(e).unwrap_or_default();
+    let by_switch = script == "player_controller_b" || script == "player_timetable_scene" || script.starts_with("player_scene_");
+    let model = n::get_entity_model(e);
+    let character = ["player_zero", "player_one", "player_two"].iter().any(|m| joaat(m) == model);
+    (by_switch || character).then(|| if script.is_empty() { "no script".to_string() } else { script })
 }
 
 /// The numbers in the `"zones"` list of the zones file, in fours.
@@ -127,13 +142,15 @@ impl SpawnGuard {
                 None
             };
             if let Some(why) = reason {
+                let occupants: Vec<i32> = (-1..8).map(|seat| n::get_ped_in_vehicle_seat(v, seat)).filter(|&o| o != 0 && o != player_ped).collect();
+                if let Some(script) = switch_made(v).or_else(|| occupants.iter().find_map(|&o| switch_made(o))) {
+                    Self::spare("vehicle", v, p, why, &script);
+                    continue;
+                }
                 self.record("vehicle", v, p, why);
                 // Anyone inside goes too (the player is never in these).
-                for seat in -1..8 {
-                    let occupant = n::get_ped_in_vehicle_seat(v, seat);
-                    if occupant != 0 && occupant != player_ped {
-                        n::delete_ped(occupant);
-                    }
+                for occupant in occupants {
+                    n::delete_ped(occupant);
                 }
                 n::delete_vehicle(v);
             }
@@ -158,12 +175,26 @@ impl SpawnGuard {
                 None
             };
             if let Some(why) = reason {
+                if let Some(script) = switch_made(p) {
+                    Self::spare("ped", p, at, why, &script);
+                    continue;
+                }
                 self.record("ped", p, at, why);
                 n::delete_ped(p);
             }
         }
         // Forget what's gone (handles get reused).
         self.seen.retain(|h| present.contains(h));
+    }
+
+    fn spare(kind: &str, e: i32, p: Vec3, why: &str, script: &str) {
+        crate::log(&format!(
+            "spawn guard: left a {kind} ({}) at ({:.1}, {:.1}, {:.1}) that {why}: made by {script}, GTA's character switch",
+            n::get_entity_model(e),
+            p.x,
+            p.y,
+            p.z
+        ));
     }
 
     fn record(&mut self, kind: &str, e: i32, p: Vec3, why: &str) {

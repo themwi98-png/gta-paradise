@@ -55,6 +55,9 @@
 //! - Burnout's drive-thrus (`shops.rs`, `@shops`): junkyards open a
 //!   customisation menu, auto repairs fix the car, gas stations fill the
 //!   boost; each has a map blip.
+//! - Character switching (`switch.rs`, `@switch`): GTA's own wheel and
+//!   switch, landing on the character already driving elsewhere in
+//!   Paradise City instead of their place in the removed Los Santos.
 //! - F9 marks the current spot (F8 is Menyoo's menu key): appends position, heading and whether in a
 //!   vehicle to `paradise_marks.csv`, so a place can be pointed out exactly.
 //! - While in a vehicle, motion is sampled at ~20 Hz into
@@ -77,6 +80,7 @@ mod physics;
 mod propshield;
 mod shops;
 mod spawnguard;
+mod switch;
 mod shv;
 mod takedown;
 mod wreck;
@@ -168,6 +172,7 @@ struct Settings {
     gta_missions: bool,
     /// Burnout's junkyards, auto repairs and gas stations.
     shops: bool,
+    switch: bool,
     /// Write the position probe and driving trace (debugging).
     debug_log: bool,
     /// Write the plugin's frame cost to paradise.log every 15 s.
@@ -176,7 +181,7 @@ struct Settings {
 
 fn load_settings() -> Settings {
     let text = std::fs::read_to_string("paradise.ini").unwrap_or_default();
-    let mut s = Settings { paradise: true, start: None, start_car: None, wreck: Default::default(), boost: Default::default(), air_gravity: 3.0, downforce: 0.75, drift: Default::default(), air: Default::default(), car_top: physics::BAKED_TOP, car_power: physics::BAKED_POWER, traffic: 1.0, police: Default::default(), takedown: Default::default(), grind: Default::default(), junctions: Default::default(), gta_missions: false, shops: true, debug_log: false, perf: true };
+    let mut s = Settings { paradise: true, start: None, start_car: None, wreck: Default::default(), boost: Default::default(), air_gravity: 3.0, downforce: 0.75, drift: Default::default(), air: Default::default(), car_top: physics::BAKED_TOP, car_power: physics::BAKED_POWER, traffic: 1.0, police: Default::default(), takedown: Default::default(), grind: Default::default(), junctions: Default::default(), gta_missions: false, shops: true, switch: true, debug_log: false, perf: true };
     for line in text.lines() {
         let p: Vec<&str> = line.split_whitespace().collect();
         let on = |v: &str| !(v.eq_ignore_ascii_case("off") || v == "0" || v.eq_ignore_ascii_case("false"));
@@ -222,6 +227,7 @@ fn load_settings() -> Settings {
             ["@debug_log", v, ..] => s.debug_log = on(v),
             ["@gta_missions", v, ..] => s.gta_missions = on(v),
             ["@shops", v, ..] => s.shops = on(v),
+            ["@switch", v, ..] => s.switch = on(v),
             ["@perf", v, ..] => s.perf = on(v),
             ["@air_control", v, ..] => s.air.control = num(v, s.air.control).clamp(0.0, 1.0),
             ["@barrel_roll", v, ..] => s.air.barrel_roll = on(v),
@@ -673,6 +679,8 @@ extern "C" fn script_main() {
     let mut gta_missions = settings.gta_missions;
     let mut shops = settings.paradise.then(shops::Shops::load);
     let mut shops_on = settings.shops;
+    let mut switcher = settings.paradise.then(switch::Switch::default);
+    let mut switch_on = settings.switch;
 
     loop {
         if keys.pressed(VK_F4) {
@@ -772,6 +780,7 @@ extern "C" fn script_main() {
             perf_on = s.perf;
             gta_missions = s.gta_missions;
             shops_on = s.shops;
+            switch_on = s.switch;
         }
         if traffic != 1.0 {
             n::set_vehicle_density_multiplier_this_frame(traffic);
@@ -798,10 +807,15 @@ extern "C" fn script_main() {
             if let Some(s) = shops.as_mut() {
                 s.update(shops_on, ped, driven, &mut boost, now);
             }
+            if let Some(sw) = switcher.as_mut() {
+                sw.update(switch_on, &mut gps, now);
+            }
             perf.done(9);
-            // A junkyard has the car (stopping it, or its menu is open):
-            // no crashes, boost or police driving on it meanwhile.
-            if shops.as_ref().is_some_and(|s| s.busy()) {
+            // A junkyard has the car (stopping it, or its menu is open), a
+            // repair's physics reset is being undone, or a character switch
+            // is changing the player's ped and car: no crashes, boost or
+            // police driving on it meanwhile.
+            if shops.as_ref().is_some_and(|s| s.busy() || s.holding()) || switcher.as_ref().is_some_and(|s| s.busy()) {
                 crash.reset();
             } else {
                 perf.start();

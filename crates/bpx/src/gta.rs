@@ -55,9 +55,17 @@ const MAX_CHILD_POLYS: usize = 32000;
 /// Burnout's collision is effectively two-sided and its triangle winding is
 /// arbitrary (~40% of floor triangles face down), but GTA's is one-sided: a
 /// down-facing floor can't be stood on. Triangles flatter than this (|nz| of
-/// the unit normal) are made to face up; steeper ones (walls) are emitted with
-/// both windings, since which side is "outside" isn't known.
+/// the unit normal) are made to face up; steeper ones (walls) are faced by the
+/// floors they join or made into slabs (`repair::solidify_walls`).
 const FLOOR_MIN_NZ: f32 = 0.25;
+/// Thickness of walls that are made into slabs: free-standing walls, fences
+/// and barriers, whose tops become ledges peds can climb.
+const WALL_THICKNESS: f32 = 0.2;
+/// Marks generated collision (crate::fill, from Burnout's visible models) in
+/// a triangle's material while the unit is repaired: it keeps the winding it
+/// was made with (ground facing up, the rest as drawn), one-sided, instead of
+/// being flipped, faced or made a slab.
+const GENERATED: u16 = 0x8000;
 
 /// Vertices of different Burnout polygon soups closer than this are merged.
 const WELD_TOLERANCE: f32 = 0.03;
@@ -73,7 +81,8 @@ const COMPOSITE_FLAGS2: &str = "VEHICLE_NOT_BVH, VEHICLE_BVH, PED, RAGDOLL, ANIM
 #[derive(Default)]
 struct Facing {
     flipped: usize,
-    doubled: usize,
+    walls: usize,
+    generated: usize,
 }
 
 /// Z component of a triangle's unit normal (counter-clockwise winding).
@@ -203,14 +212,16 @@ pub fn export_collision(col: &Path, out: &Path, opts: &Options) -> Result<()> {
     let edits = crate::edits::CollisionEdits::load()?;
     let mut facing = Facing::default();
     let mut repair_stats = repair::Stats::default();
+    let mut wall_stats = repair::WallStats::default();
     let mut overlay = Overlay::default();
     for (unit, polys, ids) in units {
-        let polys = edits.polys(unit, polys, &ids);
+        let generated: Vec<bool> = ids.iter().map(|&id| (crate::fill::FILL_ID..crate::colsrc::MODDED_ID).contains(&id)).collect();
+        let (polys, generated): (Vec<_>, Vec<bool>) = polys.into_iter().zip(ids.iter().zip(generated)).filter(|(_, (&id, _))| !edits.is_deleted(unit, id)).map(|(p, (_, g))| (p, g)).unzip();
         // Gather the unit's triangles into one welded vertex pool, so seams
         // between Burnout's separate polygon soups can be repaired.
         let mut pool = repair::Pool::new(WELD_TOLERANCE);
         let mut tris: Vec<repair::Tri> = Vec::new();
-        for p in &polys {
+        for (p, &gen) in polys.iter().zip(&generated) {
             let tag = CollisionTag::decode(p.tag);
             if tag.surface_id == bw::SURFACE_WATER {
                 *skipped.entry("water").or_default() += 1;
@@ -226,7 +237,10 @@ pub fn export_collision(col: &Path, out: &Path, opts: &Options) -> Result<()> {
             let mut push = |a: usize, b: usize, c: usize| {
                 let nz = unit_normal_z(world[a], world[b], world[c]);
                 let (ia, ib, ic) = (idx[a], idx[b], idx[c]);
-                if nz.abs() >= FLOOR_MIN_NZ {
+                if gen {
+                    tris.push(repair::Tri { mat: mat | GENERATED, v: [ia, ib, ic] });
+                    facing.generated += 1;
+                } else if nz.abs() >= FLOOR_MIN_NZ {
                     if nz > 0.0 {
                         tris.push(repair::Tri { mat, v: [ia, ib, ic] });
                     } else {
@@ -235,8 +249,7 @@ pub fn export_collision(col: &Path, out: &Path, opts: &Options) -> Result<()> {
                     }
                 } else {
                     tris.push(repair::Tri { mat, v: [ia, ib, ic] });
-                    tris.push(repair::Tri { mat, v: [ia, ic, ib] });
-                    facing.doubled += 1;
+                    facing.walls += 1;
                 }
             };
             push(0, 1, 2);
@@ -250,8 +263,18 @@ pub fn export_collision(col: &Path, out: &Path, opts: &Options) -> Result<()> {
         repair::cleanup(&pool.verts, &mut tris, &mut repair_stats);
         repair::fix_tjunctions(&pool.verts, &mut tris, TJUNCTION_TOLERANCE, &mut repair_stats);
         repair::cleanup(&pool.verts, &mut tris, &mut repair_stats);
-        repair::spatial_sort(&pool.verts, &mut tris);
+        let (kept, rest): (Vec<repair::Tri>, Vec<repair::Tri>) = tris.into_iter().partition(|t| t.mat & GENERATED != 0);
+        tris = rest;
+        let kept: Vec<repair::Tri> = kept.into_iter().map(|t| repair::Tri { mat: t.mat & !GENERATED, v: t.v }).collect();
         overlay.add(&pool.verts, &tris);
+        overlay.add(&pool.verts, &kept);
+        let is_wall = |v: &[[f32; 3]], t: &repair::Tri| {
+            let [a, b, c] = t.v.map(|i| v[i as usize]);
+            unit_normal_z(a, b, c).abs() < FLOOR_MIN_NZ
+        };
+        repair::solidify_walls(&mut pool.verts, &mut tris, is_wall, WALL_THICKNESS, &mut wall_stats);
+        tris.extend(kept);
+        repair::spatial_sort(&pool.verts, &mut tris);
 
         let mut children = vec![Child::default()];
         for t in &tris {
@@ -288,12 +311,17 @@ pub fn export_collision(col: &Path, out: &Path, opts: &Options) -> Result<()> {
         }))?,
     )?;
     println!(
-        "wrote {files} .ybn.xml files, {tris_total} triangles; floors flipped to face up {}, walls made two-sided {}; skipped {skipped:?}",
-        facing.flipped, facing.doubled
+        "wrote {files} .ybn.xml files, {tris_total} triangles; floors flipped to face up {}, walls {}; {} generated triangles kept as made; skipped {skipped:?}",
+        facing.flipped, facing.walls, facing.generated
     );
     println!(
         "seam repair: {} vertices welded, {} T-junction splits, {} degenerate and {} duplicate triangles removed",
         repair_stats.welded, repair_stats.tjunction_splits, repair_stats.degenerate_removed, repair_stats.duplicates_removed
+    );
+    let w = &wall_stats;
+    println!(
+        "walls: {} triangles one-sided (closed, faced by their floors), {} made {WALL_THICKNESS} m slabs behind their face, {} centred slabs (no face known); {} cap triangles; {} surfaces with disagreeing floors",
+        w.one_sided, w.slab_behind, w.slab_centred, w.caps, w.conflicts
     );
     Ok(())
 }
@@ -326,7 +354,8 @@ pub fn export_test_platform(out: &Path, name: &str, top: [f32; 3], size: f32) ->
 }
 
 /// Collision preview for paradise.asi's in-game overlay: the same repaired
-/// triangles (walls once, not doubled), bucketed into square tiles.
+/// triangles (walls as Burnout has them, before they're made into slabs),
+/// bucketed into square tiles.
 ///
 /// Layout (little-endian): "PCOL", u32 version (1), f32 tile size, u32 tile
 /// count, then per tile {i32 tx, i32 ty, u32 first, u32 count}, then per
@@ -341,13 +370,7 @@ const OVERLAY_TILE: f32 = 64.0;
 
 impl Overlay {
     fn add(&mut self, verts: &[[f32; 3]], tris: &[repair::Tri]) {
-        let mut seen = std::collections::HashSet::new();
         for t in tris {
-            let mut key = t.v;
-            key.sort();
-            if !seen.insert(key) {
-                continue; // second winding of a two-sided wall
-            }
             let p = t.v.map(|i| verts[i as usize]);
             let kind = if unit_normal_z(p[0], p[1], p[2]).abs() >= FLOOR_MIN_NZ { 0 } else { 1 };
             self.tris.push((p, t.mat, kind));

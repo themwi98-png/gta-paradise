@@ -40,22 +40,120 @@ pub const DEFAULT_STOCK: &str = "../Burnout Paradise Remastered/WORLDCOL.BIN";
 
 /// One unit's polygons, and each polygon's id for the collision edits.
 pub type Unit = (u32, Vec<CollisionPoly>, Vec<u32>);
+/// A unit as `Unit`, plus which polygons are the map's own (Burnout's, or a
+/// modded map's): not added pieces or hole fill.
+pub type MarkedUnit = (u32, Vec<CollisionPoly>, Vec<u32>, Vec<bool>);
 
-/// The collision units in `path`, sorted by unit number.
+/// The collision units in `path`, sorted by unit number, with the hole fill
+/// when there is one (crate::fill).
 pub fn load(path: &Path) -> Result<Vec<Unit>> {
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pcx")) {
+    Ok(load_marked(path)?.into_iter().map(|(u, p, i, _)| (u, p, i)).collect())
+}
+
+/// BPX_ADDED=none: leave out the added pieces of a `.pcx` (the map's own
+/// collision only, for collision generated from Burnout's visible models
+/// instead: crate::fill).
+pub fn added_off() -> bool {
+    std::env::var("BPX_ADDED").as_deref() == Ok("none")
+}
+
+/// As `load`, marking the map's own polygons.
+pub fn load_marked(path: &Path) -> Result<Vec<MarkedUnit>> {
+    let mut units = if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pcx")) {
         let stock = std::env::var_os("BPX_STOCK_COL").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(DEFAULT_STOCK));
         let stock = if stock.is_dir() { stock.join("WORLDCOL.BIN") } else { stock };
-        return load_pcx(path, &stock);
+        load_pcx(path, &stock)?
+    } else {
+        let path = if path.is_dir() { path.join("WORLDCOL.BIN") } else { path.to_path_buf() };
+        load_bundle(&path)?
+            .into_iter()
+            .map(|(u, p)| {
+                let ids = (0..p.len() as u32).collect();
+                let native = vec![true; p.len()];
+                (u, p, ids, native)
+            })
+            .collect()
+    };
+    apply_fixes(&mut units)?;
+    crate::fill::append(&mut units)?;
+    Ok(units)
+}
+
+/// Fixes to Burnout's own collision (BPX_COL_FIXES overrides, "none" for
+/// none). `drop_water`: per entry a unit and a point (Burnout x, y, z); the
+/// whole connected water sheet (surface 15) of that unit through the point,
+/// within 1 m of its height, is dropped. Crash sheets Burnout stretches over
+/// some basins would otherwise read as lakes far above the real water.
+pub const DEFAULT_FIXES: &str = "tools/collision/collision_fixes.json";
+
+fn apply_fixes(units: &mut [MarkedUnit]) -> Result<()> {
+    let path = std::env::var_os("BPX_COL_FIXES").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(DEFAULT_FIXES));
+    if path.as_os_str() == "none" || !path.is_file() {
+        return Ok(());
     }
-    let path = if path.is_dir() { path.join("WORLDCOL.BIN") } else { path.to_path_buf() };
-    Ok(load_bundle(&path)?
-        .into_iter()
-        .map(|(u, p)| {
-            let ids = (0..p.len() as u32).collect();
-            (u, p, ids)
-        })
-        .collect())
+    let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?).with_context(|| format!("reading {}", path.display()))?;
+    let (mut dropped, mut sheets) = (0usize, 0usize);
+    for e in doc["drop_water"].as_array().into_iter().flatten() {
+        let unit = e["unit"].as_u64().context("collision fix without unit")? as u32;
+        let at: Vec<f32> = e["at"].as_array().context("collision fix without at")?.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect();
+        anyhow::ensure!(at.len() == 3, "collision fix: at takes x, y, z");
+        let Some((_, polys, ids, native)) = units.iter_mut().find(|u| u.0 == unit) else {
+            eprintln!("collision fixes: unit {unit} not found");
+            continue;
+        };
+        let water: Vec<usize> = (0..polys.len()).filter(|&i| bw::CollisionTag::decode(polys[i].tag).surface_id == bw::SURFACE_WATER).collect();
+        // The water polygon under the point, at its height.
+        let through = |p: &CollisionPoly| {
+            let v = &p.verts;
+            (1..v.len() - 1).any(|k| {
+                let (a, b, c) = (v[0], v[k], v[k + 1]);
+                let d = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2]);
+                if d.abs() < 1e-9 {
+                    return false;
+                }
+                let l1 = ((b[2] - c[2]) * (at[0] - c[0]) + (c[0] - b[0]) * (at[2] - c[2])) / d;
+                let l2 = ((c[2] - a[2]) * (at[0] - c[0]) + (a[0] - c[0]) * (at[2] - c[2])) / d;
+                let l3 = 1.0 - l1 - l2;
+                l1 >= -1e-4 && l2 >= -1e-4 && l3 >= -1e-4 && (l1 * a[1] + l2 * b[1] + l3 * c[1] - at[1]).abs() <= 1.0
+            })
+        };
+        let Some(&seed) = water.iter().find(|&&i| through(&polys[i])) else {
+            eprintln!("collision fixes: no water sheet at {at:?} in unit {unit}");
+            continue;
+        };
+        // Flood over water polygons sharing a vertex (to 5 cm).
+        let key = |v: [f32; 3]| v.map(|c| (c / 0.05).round() as i32);
+        let mut by_vertex: HashMap<[i32; 3], Vec<usize>> = HashMap::new();
+        for &i in &water {
+            for &v in &polys[i].verts {
+                by_vertex.entry(key(v)).or_default().push(i);
+            }
+        }
+        let mut drop = vec![false; polys.len()];
+        let mut stack = vec![seed];
+        drop[seed] = true;
+        while let Some(i) = stack.pop() {
+            for &v in &polys[i].verts {
+                for &j in &by_vertex[&key(v)] {
+                    if !drop[j] {
+                        drop[j] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+        }
+        let n = drop.iter().filter(|&&d| d).count();
+        let mut k = drop.iter();
+        polys.retain(|_| !*k.next().unwrap());
+        let mut k = drop.iter();
+        ids.retain(|_| !*k.next().unwrap());
+        let mut k = drop.iter();
+        native.retain(|_| !*k.next().unwrap());
+        dropped += n;
+        sheets += 1;
+    }
+    eprintln!("collision fixes: {dropped} water polygons in {sheets} sheets dropped ({})", path.display());
+    Ok(())
 }
 
 fn load_bundle(path: &Path) -> Result<Vec<(u32, Vec<CollisionPoly>)>> {
@@ -148,6 +246,8 @@ const RUN_ADDED: u8 = 1;
 /// keeps only what the combined file adds to the stock one, then checks that
 /// loading it back gives the combined collision exactly.
 pub fn split(stock: &Path, combined: &Path, out: &Path) -> Result<()> {
+    std::env::set_var(crate::fill::ENV, "none");
+    std::env::set_var("BPX_COL_FIXES", "none");
     let stock_units: HashMap<u32, Vec<CollisionPoly>> = load(stock)?.into_iter().map(|(u, p, _)| (u, p)).collect();
     let combined_units: Vec<(u32, Vec<CollisionPoly>)> = load(combined)?.into_iter().map(|(u, p, _)| (u, p)).collect();
     let mut w = Writer(Vec::new());
@@ -220,7 +320,7 @@ pub fn split(stock: &Path, combined: &Path, out: &Path) -> Result<()> {
     if back.len() != combined_units.len() {
         bail!("check failed: {} units back, {} expected", back.len(), combined_units.len());
     }
-    for ((ua, pa, _), (ub, pb)) in back.iter().zip(&combined_units) {
+    for ((ua, pa, _, _), (ub, pb)) in back.iter().zip(&combined_units) {
         if ua != ub || pa.len() != pb.len() || pa.iter().zip(pb).any(|(a, b)| key(a) != key(b)) {
             bail!("check failed in unit {ub}");
         }
@@ -299,6 +399,8 @@ pub fn compare(stock: &Path, modded: &Path) -> Result<()> {
 pub fn compare_added(stock: &Path, modded: &Path, pcx: &Path) -> Result<()> {
     let a: HashMap<u32, Vec<CollisionPoly>> = load_bundle(stock)?.into_iter().collect();
     std::env::set_var("BPX_STOCK_COL", modded);
+    std::env::set_var(crate::fill::ENV, "none");
+    std::env::set_var("BPX_COL_FIXES", "none");
     let units = load(pcx)?;
     const CELL: f32 = 4.0;
     let (mut near_total, mut added_total) = (0usize, 0usize);
@@ -392,6 +494,8 @@ pub fn modcompat(stock: &Path, modded: &Path, pcx: &Path, name: &str) -> Result<
     let path = modded_path();
     std::env::set_var("BPX_STOCK_COL", modded);
     std::env::set_var("BPX_MODDED_COL", "none");
+    std::env::set_var(crate::fill::ENV, "none");
+    std::env::set_var("BPX_COL_FIXES", "none");
     let units = load(pcx)?;
     let mut doc: serde_json::Value = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| {
         serde_json::json!({"format": "paradise-modded-collision-v1",
@@ -495,7 +599,7 @@ pub fn modcompat(stock: &Path, modded: &Path, pcx: &Path, name: &str) -> Result<
     Ok(())
 }
 
-fn load_pcx(path: &Path, stock: &Path) -> Result<Vec<Unit>> {
+fn load_pcx(path: &Path, stock: &Path) -> Result<Vec<MarkedUnit>> {
     let mut data = Vec::new();
     ZlibDecoder::new(std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?).read_to_end(&mut data)?;
     let mut stock_units: HashMap<u32, Vec<CollisionPoly>> = load_bundle(stock)
@@ -507,6 +611,10 @@ fn load_pcx(path: &Path, stock: &Path) -> Result<Vec<Unit>> {
         (p.as_os_str() != "none").then(|| std::fs::read(&p).ok().and_then(|b| serde_json::from_slice(&b).ok())).flatten()
     };
     let mut dropped: HashMap<String, usize> = HashMap::new();
+    let skip_added = added_off();
+    if skip_added {
+        eprintln!("collision: added pieces left out (BPX_ADDED=none)");
+    }
     let mut r = Reader(&data, 0);
     let v2 = match r.take(4)? {
         m if m == MAGIC => true,
@@ -527,12 +635,13 @@ fn load_pcx(path: &Path, stock: &Path) -> Result<Vec<Unit>> {
             true
         };
         let runs = r.u32()?;
-        let (mut polys, mut ids) = (Vec::new(), Vec::new());
+        let (mut polys, mut ids, mut native) = (Vec::new(), Vec::new(), Vec::new());
         if !same {
             // A modded map's own collision, then the added pieces.
             modded.push(unit);
             ids.extend((0..base.len() as u32).map(|i| MODDED_ID + i));
             polys.extend_from_slice(&base);
+            native.resize(polys.len(), true);
         }
         let mut at = 0u32;
         for _ in 0..runs {
@@ -545,6 +654,7 @@ fn load_pcx(path: &Path, stock: &Path) -> Result<Vec<Unit>> {
                         })?;
                         polys.extend_from_slice(part);
                         ids.extend(at..at + len as u32);
+                        native.resize(polys.len(), true);
                     }
                     at += len as u32;
                 }
@@ -556,8 +666,11 @@ fn load_pcx(path: &Path, stock: &Path) -> Result<Vec<Unit>> {
                         for _ in 0..nv {
                             verts.push([r.f32()?, r.f32()?, r.f32()?]);
                         }
-                        polys.push(CollisionPoly { verts, tag });
-                        ids.push(at);
+                        if !skip_added {
+                            polys.push(CollisionPoly { verts, tag });
+                            ids.push(at);
+                            native.push(false);
+                        }
                         at += 1;
                     }
                 }
@@ -568,12 +681,17 @@ fn load_pcx(path: &Path, stock: &Path) -> Result<Vec<Unit>> {
             // Added pieces that clash with the modded map's own collision.
             if let Some((map, drop)) = drops_doc.as_ref().and_then(|d| modded_drops(d, unit, &base)) {
                 let before = polys.len();
-                let (p, i): (Vec<CollisionPoly>, Vec<u32>) = polys.into_iter().zip(ids).filter(|(_, id)| !drop.contains(id)).unzip();
-                *dropped.entry(map).or_default() += before - p.len();
-                (polys, ids) = (p, i);
+                let keep: Vec<bool> = ids.iter().map(|id| !drop.contains(id)).collect();
+                let mut k = keep.iter();
+                polys.retain(|_| *k.next().unwrap());
+                let mut k = keep.iter();
+                ids.retain(|_| *k.next().unwrap());
+                let mut k = keep.iter();
+                native.retain(|_| *k.next().unwrap());
+                *dropped.entry(map).or_default() += before - polys.len();
             }
         }
-        out.push((unit, polys, ids));
+        out.push((unit, polys, ids, native));
     }
     for (map, n) in &dropped {
         eprintln!("collision: {n} added pieces dropped where they clash with {map}'s own collision");
@@ -582,7 +700,8 @@ fn load_pcx(path: &Path, stock: &Path) -> Result<Vec<Unit>> {
     for (unit, polys) in stock_units.into_iter().filter(|(_, p)| !p.is_empty()) {
         modded.push(unit);
         let ids = (0..polys.len() as u32).map(|i| MODDED_ID + i).collect();
-        out.push((unit, polys, ids));
+        let native = vec![true; polys.len()];
+        out.push((unit, polys, ids, native));
     }
     if !modded.is_empty() {
         modded.sort();

@@ -18,6 +18,29 @@ const OFFSET: [&str; 2] = ["--offset", "0,0,9.9"];
 const COL: &str = "tools/collision/paradise_extra.pcx";
 /// Added collision pieces dropped for modded maps (bpx col-modcompat).
 const MODDED: &str = "tools/collision/modded_maps.json";
+/// Fixes to Burnout's own collision (bpx colsrc), read by every collision step.
+const FIXES: &str = "tools/collision/collision_fixes.json";
+/// Burnout's model ids, for the generated collision in a modded map's units.
+const GROUND_MODELS: &str = "tools/collision/ground_models.txt";
+/// Collision generated from Burnout's visible models (bpx col-gen), which
+/// replaces the added pieces of COL unless PARADISE_COLLISION=old.
+const GEN: &str = "out/collision_gen/paradise_gen.bin";
+
+/// PARADISE_COLLISION=old (paradise-setup-cli --collision old): the old
+/// collision, Burnout's own plus the added pieces of COL with the hand edits,
+/// instead of the generated one.
+fn old_collision() -> bool {
+    std::env::var("PARADISE_COLLISION").as_deref() == Ok("old")
+}
+
+/// For the fingerprints of the steps that read collision.
+fn collision_mode(_: &Ctx) -> String {
+    if old_collision() { "collision old" } else { "collision generated" }.to_string()
+}
+
+fn minimap_extra(c: &Ctx) -> String {
+    format!("{}|{}", minimap_sources(c), collision_mode(c))
+}
 
 struct Step {
     name: &'static str,
@@ -99,12 +122,21 @@ fn installed(c: &Ctx) -> String {
 
 const STEPS: &[Step] = &[
     Step {
+        name: "gen",
+        title: "Collision from Burnout's models",
+        inputs: &[COL, MODDED, FIXES, GROUND_MODELS],
+        deps: &[],
+        outputs: &[GEN],
+        extra: nothing,
+        run: gen, map: true,
+    },
+    Step {
         name: "collision",
         title: "Collision",
-        inputs: &[COL, MODDED, "tools/edits/collision_edits.json"],
-        deps: &[],
+        inputs: &[COL, MODDED, FIXES, "tools/edits/collision_edits.json"],
+        deps: &["gen"],
         outputs: &["out/gta_col", "out/gta_col_xml/paradise_col.bin"],
-        extra: nothing,
+        extra: collision_mode,
         run: collision, map: true,
     },
     Step { name: "visual", title: "City models and textures (the long one)", inputs: &[], deps: &[], outputs: &["out/gta_vis", "out/meta_vis"], extra: nothing, run: visual, map: true },
@@ -112,29 +144,29 @@ const STEPS: &[Step] = &[
     Step {
         name: "props",
         title: "Street props",
-        inputs: &["tools/props_map.csv", COL, MODDED, "tools/edits/collision_edits.json"],
-        deps: &[],
+        inputs: &["tools/props_map.csv", COL, MODDED, FIXES, "tools/edits/collision_edits.json"],
+        deps: &["gen"],
         outputs: &["out/meta_props", "out/props/paradise_props.csv"],
-        extra: nothing,
+        extra: collision_mode,
         run: props, map: true,
     },
     Step { name: "pack", title: "Map package", inputs: &[], deps: &["collision", "visual", "cargens", "props"], outputs: &["out/dlc/bpparadise/dlc.rpf"], extra: nothing, run: pack, map: true },
     Step {
         name: "water",
         title: "Sea and lakes",
-        inputs: &[COL, MODDED, "tools/edits/collision_edits.json", "tools/edits/water_edits.json"],
-        deps: &[],
+        inputs: &[COL, MODDED, FIXES, "tools/edits/collision_edits.json", "tools/edits/water_edits.json"],
+        deps: &["gen"],
         outputs: &["out/water_paradise.xml"],
-        extra: nothing,
+        extra: collision_mode,
         run: water, map: true,
     },
     Step {
         name: "paths",
         title: "Roads and traffic",
-        inputs: &["tools/edits/traffic_edits.json", "tools/edits/junction_edits.json", "out/props/paradise_props.csv", COL, MODDED],
-        deps: &[],
+        inputs: &["tools/edits/traffic_edits.json", "tools/edits/junction_edits.json", "out/props/paradise_props.csv", COL, MODDED, FIXES],
+        deps: &["gen"],
         outputs: &["out/gta_paths", "out/traffic/paradise_junctions.txt", "out/gta_paths_xml/paradise_roads.txt"],
-        extra: nothing,
+        extra: collision_mode,
         run: paths, map: true,
     },
     Step { name: "shops", title: "Junkyards, repairs and gas stations", inputs: &[LOTS], deps: &[], outputs: &["out/traffic/paradise_shops.txt"], extra: nothing, run: shops, map: true },
@@ -142,19 +174,19 @@ const STEPS: &[Step] = &[
     Step {
         name: "navmesh",
         title: "Pedestrian paths",
-        inputs: &[COL, MODDED, "tools/edits/collision_edits.json", "tools/edits/sidewalk_edits.json"],
-        deps: &[],
+        inputs: &[COL, MODDED, FIXES, "tools/edits/collision_edits.json", "tools/edits/sidewalk_edits.json"],
+        deps: &["gen"],
         outputs: &["out/gta_navmesh"],
-        extra: nothing,
+        extra: collision_mode,
         run: navmesh, map: true,
     },
     Step {
         name: "minimap",
         title: "Radar and map",
-        inputs: &[COL, MODDED, "tools/edits/collision_edits.json", "tools/edits/minimap_edits.json"],
-        deps: &["water"],
+        inputs: &[COL, MODDED, FIXES, "tools/edits/collision_edits.json", "tools/edits/minimap_edits.json"],
+        deps: &["water", "gen"],
         outputs: &["out/gta_minimap"],
-        extra: minimap_sources,
+        extra: minimap_extra,
         run: minimap,
         map: true,
     },
@@ -237,7 +269,15 @@ impl Ctx<'_> {
     fn tool(&self, exe: &Path, args: &[&str]) -> Result<()> {
         self.note(&format!("> {} {}", exe.file_name().unwrap_or_default().to_string_lossy(), args.join(" ")));
         let log = self.log.borrow_mut().try_clone()?;
-        let status = crate::command(exe)
+        let mut cmd = crate::command(exe);
+        // The collision every step reads: generated (the added pieces left
+        // out, the generated file added), or the old one.
+        if old_collision() {
+            cmd.env("BPX_FILL", "none");
+        } else {
+            cmd.env("BPX_ADDED", "none").env("BPX_FILL", GEN);
+        }
+        let status = cmd
             .args(args)
             .current_dir(&self.layout.root)
             .env("CODEWALKER_DIR", &self.games.codewalker)
@@ -432,6 +472,12 @@ pub fn run_all(layout: &Layout, games: &Games, only: Option<&[String]>, rebuild:
 }
 
 // --- The steps ------------------------------------------------------------
+
+/// Generated even for the old collision, so switching back is quick.
+fn gen(c: &Ctx) -> Result<()> {
+    c.clear(&["out/collision_gen"])?;
+    c.bpx(&["col-gen", COL, &c.burnout(), GEN])
+}
 
 fn collision(c: &Ctx) -> Result<()> {
     c.clear(&["out/gta_col_xml", "out/gta_col"])?;

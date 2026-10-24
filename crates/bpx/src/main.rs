@@ -2,6 +2,7 @@ mod collision;
 mod colsrc;
 mod edits;
 mod export;
+mod fill;
 mod gta;
 mod gtadata;
 mod gtavis;
@@ -32,6 +33,15 @@ const USAGE: &str = "usage:
   bpx col-compare <stock WORLDCOL.BIN> <modded WORLDCOL.BIN> [extra.pcx]   (what a modded map changes)
   bpx col-modcompat <stock WORLDCOL.BIN> <modded WORLDCOL.BIN> <extra.pcx> <map name>
       (added pieces that clash with a modded map's collision -> tools/collision/modded_maps.json)
+  bpx col-fill <collision> <burnout-dir> <out.bin> [--png <overview.png>]
+      (collision for Burnout's visible ground where there's none; BPX_FILL / out/collision_fill)
+  bpx col-gen <collision> <burnout-dir> <out.bin> [--png <overview.png>]
+      (all collision beyond the map's own from Burnout's visible models: ground, cliffs,
+       structures, mountains; replaces the added pieces with BPX_ADDED=none BPX_FILL=<out.bin>)
+  bpx col-gen-compare <collision> <gen.bin> <out.png>   (old added pieces against generated collision, top-down)
+  bpx col-fill-view <fill.bin> <out-dir>   (the fill as the viewer's Hole fill layer)
+  bpx col-fill-survey <collision> <burnout-dir> <fill.bin> <x> <z> <r>   (what isn't covered near a Burnout point)
+  bpx col-fill-ground-ids <stock burnout-dir> <out.txt> [<modded burnout-dir>]   (ground model ids, for modded maps' unnamed units)
   bpx collision <game-dir|WORLDCOL file> <out-dir> <unit|all> [unit...] [--base <WORLDCOL>]
   bpx surfaces <game-dir> [unit-step]   (report what each collision surface id is)
   bpx materials <game-dir> [unit-step]  (report material texture-slot roles per shader)
@@ -119,6 +129,21 @@ fn main() -> Result<()> {
         Some("col-compare") if args.len() >= 4 => colsrc::compare_added(&PathBuf::from(&args[1]), &PathBuf::from(&args[2]), &PathBuf::from(&args[3])),
         Some("col-compare") if args.len() >= 3 => colsrc::compare(&PathBuf::from(&args[1]), &PathBuf::from(&args[2])),
         Some("col-split") if args.len() >= 4 => colsrc::split(&PathBuf::from(&args[1]), &PathBuf::from(&args[2]), &PathBuf::from(&args[3])),
+        Some("col-fill") if args.len() >= 4 => {
+            let png = args.iter().position(|a| a == "--png").and_then(|i| args.get(i + 1)).map(PathBuf::from);
+            fill::generate(&PathBuf::from(&args[1]), &PathBuf::from(&args[2]), &PathBuf::from(&args[3]), png.as_deref(), false)
+        }
+        Some("col-gen") if args.len() >= 4 => {
+            let png = args.iter().position(|a| a == "--png").and_then(|i| args.get(i + 1)).map(PathBuf::from);
+            fill::generate(&PathBuf::from(&args[1]), &PathBuf::from(&args[2]), &PathBuf::from(&args[3]), png.as_deref(), true)
+        }
+        Some("col-gen-compare") if args.len() >= 4 => fill::compare_gen(&PathBuf::from(&args[1]), &PathBuf::from(&args[2]), &PathBuf::from(&args[3])),
+        Some("col-fill-view") if args.len() >= 3 => fill::export_viewer(&PathBuf::from(&args[1]), &PathBuf::from(&args[2])),
+        Some("col-fill-ground-ids") if args.len() >= 3 => fill::ground_ids(&PathBuf::from(&args[1]), &PathBuf::from(&args[2]), args.get(3).map(PathBuf::from).as_deref()),
+        Some("col-fill-survey") if args.len() >= 7 => {
+            let n: Vec<f64> = args[4..7].iter().map(|s| s.parse()).collect::<Result<_, _>>()?;
+            fill::survey(&PathBuf::from(&args[1]), &PathBuf::from(&args[2]), &PathBuf::from(&args[3]), n[0], n[1], n[2])
+        }
         Some("collision") if args.len() >= 4 => {
             let mut rest: Vec<&String> = args[3..].iter().collect();
             let mut base = None;

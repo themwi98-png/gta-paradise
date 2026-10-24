@@ -18,7 +18,8 @@
 //!   big stand-in such as the whole of Big Surf Island becomes the parent of
 //!   the units it covers that have no stand-in of their own (see
 //!   `export_backdrops`). They share one texture dictionary of cut-down
-//!   textures and live in one LOD map file.
+//!   textures and live in the LOD map files, with SLOD1 and SLOD2 copies for
+//!   GTA's character switch (`write_lod_ymaps`).
 //!
 //! Burnout materials map onto GTA's diffuse-only shaders, with parameters and
 //! vertex layout copied from Rockstar's own drawables:
@@ -161,7 +162,7 @@ fn material_keys(cache: &mut MaterialCache, ex: &mut Exporter, b: &Bundle, mat: 
         .clone()
 }
 
-fn transform_point(m: &[f32; 16], p: [f32; 3]) -> [f32; 3] {
+pub(crate) fn transform_point(m: &[f32; 16], p: [f32; 3]) -> [f32; 3] {
     [0, 1, 2].map(|k| p[0] * m[k] + p[1] * m[4 + k] + p[2] * m[8 + k] + m[12 + k])
 }
 
@@ -285,9 +286,10 @@ pub fn export_visual(game: &Path, out_assets: &Path, out_meta: &Path, units: &[u
         by_unit.insert(unit, unit_models);
     }
 
-    // Backdrops: stand-ins (LOD parents of units) and scenery, in one LOD map.
+    // Backdrops: stand-ins (LOD parents of units) and scenery, in the LOD maps.
     let lods = if opts.lods { export_backdrops(game, out_assets, &mut ex, &by_unit, opts)? } else { Vec::new() };
     let lod_map = format!("{}lod", opts.prefix);
+    let slod_map = format!("{}slod", opts.prefix);
     let mut parent_of: HashMap<u32, usize> = HashMap::new();
     for (i, l) in lods.iter().enumerate() {
         for &u in &l.children {
@@ -301,11 +303,12 @@ pub fn export_visual(game: &Path, out_assets: &Path, out_meta: &Path, units: &[u
     }
     let mut models = Vec::new();
     for (unit, unit_models) in by_unit {
-        write_ymap(out_meta, unit, &unit_models, parent_of.get(&unit).map(|&i| (lod_map.as_str(), i)), opts)?;
+        // (The LOD map lists the SLOD1s first.)
+        write_ymap(out_meta, unit, &unit_models, parent_of.get(&unit).map(|&i| (lod_map.as_str(), lods.len() + i)), opts)?;
         models.extend(unit_models);
     }
     if !lods.is_empty() {
-        write_lod_ymap(out_meta, &lod_map, &lods, &child_counts, opts)?;
+        write_lod_ymaps(out_meta, &lod_map, &slod_map, &lods, &child_counts, opts)?;
     }
     let lod_count = lods.len();
     models.extend(lods.into_iter().map(|l| l.model));
@@ -383,6 +386,57 @@ fn zone_bounds(game: &Path) -> HashMap<u32, ([f32; 2], [f32; 2])> {
         out.insert(bnd2::u64_at(m, z + 0x10) as u32, (lo, hi));
     }
     out
+}
+
+/// PVS zone outlines (Burnout x, z points) by zone id, which is the unit number.
+pub(crate) fn zone_polygons(game: &Path) -> HashMap<u32, Vec<[f32; 2]>> {
+    let mut out = HashMap::new();
+    let Ok(b) = Bundle::open(game.join("PVS.BNDL")) else { return out };
+    let Some(r) = b.entries.first().and_then(|e| Res::load(&b, e).ok()) else { return out };
+    let m = &r.main;
+    let (zones, n) = (bnd2::u32_at(m, 4) as usize, bnd2::u32_at(m, 0x10) as usize);
+    for i in 0..n {
+        let z = zones + i * 0x30;
+        if z + 0x30 > m.len() {
+            break;
+        }
+        let (pts, np) = (bnd2::u32_at(m, z) as usize, bnd2::u16_at(m, z + 0x1A) as usize);
+        if np == 0 || pts + np * 16 > m.len() {
+            continue;
+        }
+        let poly = (0..np).map(|k| [bnd2::f32_at(m, pts + k * 16), bnd2::f32_at(m, pts + k * 16 + 4)]).collect();
+        out.insert(bnd2::u64_at(m, z + 0x10) as u32, poly);
+    }
+    out
+}
+
+/// The backdrop pieces that stand in for no unit (the mountains around the
+/// city and other scenery), as triangles in Burnout's world space, for
+/// collision (crate::fill). Water, lights and patches are left out as for
+/// drawing, and so are water materials.
+pub(crate) fn backdrop_scenery(game: &Path) -> Result<Vec<(String, Vec<[[f32; 3]; 3]>)>> {
+    let Ok(bdb) = Bundle::open(game.join("GLOBALBACKDROPS.BNDL")) else { return Ok(Vec::new()) };
+    let mut out = Vec::new();
+    for inst in collect_backdrops(game, &bdb)? {
+        if inst.zone >= 0 {
+            continue;
+        }
+        let name = bdb.name_of(inst.model).map(crate::export::short_name).unwrap_or_else(|| format!("{:08x}", inst.model as u32));
+        let lower = name.to_ascii_lowercase();
+        if ["water", "lake", "light", "cheap", "hole", "terrain_fix", "pvsfix"].iter().any(|w| lower.contains(w)) {
+            continue;
+        }
+        let mut tris = Vec::new();
+        for g in piece_geometry(&bdb, inst.model) {
+            if g.material.and_then(|m| bdb.name_of(m)).is_some_and(|n| n.to_ascii_lowercase().contains("water")) {
+                continue;
+            }
+            let pos: Vec<[f32; 3]> = g.positions.iter().map(|&p| transform_point(&inst.transform, p)).collect();
+            tris.extend(g.indices.chunks_exact(3).map(|t| [pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]]));
+        }
+        out.push((name, tris));
+    }
+    Ok(out)
 }
 
 /// A backdrop piece's top-LOD geometry (in its own space).
@@ -672,43 +726,77 @@ fn export_lod_model(
     Ok(Some((UnitModel { name: name.to_string(), txd: txd.to_string(), origin, bb_min: glo, bb_max: ghi, triangles, lod_dist: STAND_IN_DIST }, stems)))
 }
 
-/// The LOD map: every backdrop entity; a stand-in's children are its units'
-/// drawables (in their own map files, which name this one as parent).
-fn write_lod_ymap(out: &Path, ymap: &str, lods: &[LodModel], child_counts: &[usize], opts: &Options) -> Result<()> {
+/// Each backdrop's SLOD1 and SLOD2 parents are drawn this much (m) further
+/// out than the level below.
+const SLOD_STEP: f32 = 1.0;
+
+/// One entity of a LOD map file.
+fn lod_entity(m: &UnitModel, level: &str, flags: u32, parent: i64, lod_dist: f32, child_dist: f32, num: usize) -> String {
+    format!(
+        "  <Item type=\"CEntityDef\">\n   <archetypeName>{}</archetypeName>\n   <flags value=\"{flags}\" />\n   <guid value=\"{}\" />\n   {}\n   <rotation x=\"0\" y=\"0\" z=\"0\" w=\"1\" />\n   <scaleXY value=\"1\" />\n   <scaleZ value=\"1\" />\n   <parentIndex value=\"{parent}\" />\n   <lodDist value=\"{lod_dist}\" />\n   <childLodDist value=\"{child_dist}\" />\n   <lodLevel>LODTYPES_DEPTH_{level}</lodLevel>\n   <numChildren value=\"{num}\" />\n   <priorityLevel>PRI_REQUIRED</priorityLevel>\n   <extensions />\n   <ambientOcclusionMultiplier value=\"255\" />\n   <artificialAmbientOcclusion value=\"255\" />\n   <tintValue value=\"0\" />\n  </Item>\n",
+        m.name,
+        if level == "LOD" { joaat(&m.name) } else { joaat(&format!("{}_{level}", m.name)) },
+        v3("position", m.origin)
+    )
+}
+
+/// One LOD map file of `entities` drawn out to `far`, around `lods`.
+fn write_lod_file(out: &Path, ymap: &str, parent: Option<&str>, content_flags: u32, lods: &[LodModel], far: f32, entities: &str) -> Result<()> {
     let mut wmin = [f32::MAX; 3];
     let mut wmax = [f32::MIN; 3];
-    let mut far = 0f32;
-    let mut entities = String::new();
-    for (i, l) in lods.iter().enumerate() {
+    for l in lods {
         let m = &l.model;
         for k in 0..3 {
             wmin[k] = wmin[k].min(m.origin[k] + m.bb_min[k]);
             wmax[k] = wmax[k].max(m.origin[k] + m.bb_max[k]);
         }
-        far = far.max(m.lod_dist);
-        let num = child_counts[i];
-        let child_dist = if num > 0 { opts.lod_dist } else { 0.0 };
-        let _ = write!(
-            entities,
-            "  <Item type=\"CEntityDef\">\n   <archetypeName>{}</archetypeName>\n   <flags value=\"1572864\" />\n   <guid value=\"{}\" />\n   {}\n   <rotation x=\"0\" y=\"0\" z=\"0\" w=\"1\" />\n   <scaleXY value=\"1\" />\n   <scaleZ value=\"1\" />\n   <parentIndex value=\"-1\" />\n   <lodDist value=\"{}\" />\n   <childLodDist value=\"{child_dist}\" />\n   <lodLevel>LODTYPES_DEPTH_LOD</lodLevel>\n   <numChildren value=\"{num}\" />\n   <priorityLevel>PRI_REQUIRED</priorityLevel>\n   <extensions />\n   <ambientOcclusionMultiplier value=\"255\" />\n   <artificialAmbientOcclusion value=\"255\" />\n   <tintValue value=\"0\" />\n  </Item>\n",
-            m.name,
-            joaat(&m.name),
-            v3("position", m.origin),
-            m.lod_dist
-        );
     }
     let smin = [wmin[0] - far, wmin[1] - far, wmin[2] - far];
     let smax = [wmax[0] + far, wmax[1] + far, wmax[2] + far];
+    let parent = parent.map_or("<parent />".to_string(), |p| format!("<parent>{p}</parent>"));
     let head = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CMapData>\n <name>{ymap}</name>\n <parent />\n <flags value=\"2\" />\n <contentFlags value=\"2\" />\n {}\n {}\n {}\n {}\n <entities>\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CMapData>\n <name>{ymap}</name>\n {parent}\n <flags value=\"2\" />\n <contentFlags value=\"{content_flags}\" />\n {}\n {}\n {}\n {}\n <entities>\n",
         v3("streamingExtentsMin", smin),
         v3("streamingExtentsMax", smax),
         v3("entitiesExtentsMin", wmin),
         v3("entitiesExtentsMax", wmax)
     );
     let tail = YMAP_TAIL.replace("{ymap}", ymap);
-    std::fs::write(out.join(format!("{ymap}.ymap.xml")), head + &entities + &tail)?;
+    std::fs::write(out.join(format!("{ymap}.ymap.xml")), head + entities + &tail)?;
     Ok(())
+}
+
+/// The LOD map files. Every backdrop is a LOD entity; a stand-in's children
+/// are its units' drawables (in their own map files, which name `lod_ymap` as
+/// parent and point at index `lods.len() + i`).
+///
+/// Every backdrop also gets an SLOD1 and an SLOD2 parent drawing the same
+/// model. GTA's character switch draws only that level at the top of its
+/// climb (common:/data/playerswitch.meta: ceilingLodLevel SLOD1 for medium
+/// switches, SLOD2 for long ones), and Paradise City vanished there without
+/// them. The layout is Rockstar's (e.g. dt1_01.ymap / dt1_lod.ymap):
+/// - `lod_ymap` (contentFlags 18) has the SLOD1s, then the LODs; each LOD's
+///   parent is the SLOD1 at its index in the same file;
+/// - `slod_ymap` (contentFlags 20, the parent map of `lod_ymap`) has the
+///   SLOD2s; each SLOD1 points at the SLOD2 at its index there (flag 8:
+///   parent in the parent map).
+fn write_lod_ymaps(out: &Path, lod_ymap: &str, slod_ymap: &str, lods: &[LodModel], child_counts: &[usize], opts: &Options) -> Result<()> {
+    let mut slod1 = String::new();
+    let mut lod = String::new();
+    let mut slod2 = String::new();
+    let mut far = 0f32;
+    for (i, l) in lods.iter().enumerate() {
+        let m = &l.model;
+        let d = m.lod_dist;
+        let num = child_counts[i];
+        let child_dist = if num > 0 { opts.lod_dist } else { 0.0 };
+        far = far.max(d + 2.0 * SLOD_STEP);
+        slod1.push_str(&lod_entity(m, "SLOD1", 1572872, i as i64, d + SLOD_STEP, d, 1));
+        lod.push_str(&lod_entity(m, "LOD", 1572864, i as i64, d, child_dist, num));
+        slod2.push_str(&lod_entity(m, "SLOD2", 1572864, -1, d + 2.0 * SLOD_STEP, d + SLOD_STEP, 1));
+    }
+    write_lod_file(out, lod_ymap, Some(slod_ymap), 18, lods, far, &(slod1 + &lod))?;
+    write_lod_file(out, slod_ymap, None, 20, lods, far, &slod2)
 }
 
 fn texture_bytes(out: &Path, stem: &str) -> u64 {

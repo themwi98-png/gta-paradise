@@ -9,6 +9,9 @@
 //!   paradise-setup-cli --map los_santos    GTA's own Los Santos with only the
 //!                                          Burnout driving (--map paradise:
 //!                                          Paradise City; default: as now)
+//!   paradise-setup-cli --collision old     the old collision (Burnout's plus the
+//!                                          added pieces) instead of the one
+//!                                          generated from Burnout's models
 
 use anyhow::{bail, Context, Result};
 use paradise_setup::{find, steps, Games, Layout};
@@ -39,6 +42,11 @@ fn parse_args() -> Result<Args> {
             "--rebuild" => a.rebuild = true,
             "--yes" | "-y" => a.yes = true,
             "--dev" => a.dev = true,
+            "--collision" => match value()?.as_str() {
+                "old" => std::env::set_var("PARADISE_COLLISION", "old"),
+                "new" | "generated" => std::env::remove_var("PARADISE_COLLISION"),
+                c => bail!("--collision {c}: new or old"),
+            },
             "--map" => {
                 a.map = Some(match value()?.to_ascii_lowercase().as_str() {
                     "paradise" => steps::Map::Paradise,

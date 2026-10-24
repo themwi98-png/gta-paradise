@@ -53,6 +53,10 @@ const LAKE_FLAT: f32 = 0.5;
 const WATER_COLLISION_DEPTH: f32 = 3.0;
 /// How far (cells) a lake may spread over banks lower than its surface.
 const LAKE_GROW: usize = 8;
+/// Hole fill (crate::fill) at most this far below Burnout's water surface is
+/// a lake bed, not land: Silver Lake's bed has collision once filled. Deeper
+/// fill lies under a crash surface Burnout stretches over a ravine, no lake.
+const LAKE_BED_DEPTH: f32 = 20.0;
 /// A land cell next to water is a shore cell, and gets that water, if its
 /// lowest floor is below the surface by less than this (deeper ground is
 /// beyond a dam or cliff, not the bank).
@@ -209,12 +213,17 @@ pub fn generate(col: &Path, gta_water: &Path, out: &Path, placement: Placement, 
 
     // Placed floor triangles (water surfaces, which are Burnout's seabed, and
     // invisible walls excluded).
-    let mut tris: Vec<[[f32; 3]; 3]> = Vec::new();
+    // Each floor with whether it is hole fill.
+    let mut tris: Vec<([[f32; 3]; 3], bool)> = Vec::new();
     let mut water_tris: Vec<[[f32; 3]; 3]> = Vec::new();
     let (mut lo, mut hi) = (WORLD_MIN, WORLD_MAX);
     let edits = crate::edits::CollisionEdits::load()?;
     for (unit, polys, ids) in units {
-        for p in edits.polys(unit, polys, &ids) {
+        for (p, &id) in polys.iter().zip(&ids) {
+            if edits.is_deleted(unit, id) {
+                continue;
+            }
+            let fill = id >= crate::fill::FILL_ID && id < crate::colsrc::MODDED_ID;
             let tag = CollisionTag::decode(p.tag);
             if tag.surface_id == bw::SURFACE_INVISIBLE_WALL {
                 continue;
@@ -237,7 +246,7 @@ pub fn generate(col: &Path, gta_water: &Path, out: &Path, placement: Placement, 
             }
             for f in faces {
                 if normal_z(f[0], f[1], f[2]).abs() >= 0.25 {
-                    tris.push(f);
+                    tris.push((f, fill));
                 }
             }
         }
@@ -257,19 +266,6 @@ pub fn generate(col: &Path, gta_water: &Path, out: &Path, placement: Placement, 
             v[i] = z;
         }
     };
-    for t in &tris {
-        let mut hits: Vec<(usize, f32)> = t.iter().filter_map(|p| g.cell_of(p[0], p[1]).map(|(cx, cy)| (cy * w + cx, p[2]))).collect();
-        g.for_centres(t, |i, z| hits.push((i, z)));
-        for (i, z) in hits {
-            raise(&mut g.top, i, z);
-            if !(g.bottom[i] <= z) {
-                g.bottom[i] = z;
-            }
-            if z >= land_z {
-                g.land[i] = true;
-            }
-        }
-    }
     for t in &water_tris {
         let mut hits: Vec<(usize, f32)> = t.iter().filter_map(|p| g.cell_of(p[0], p[1]).map(|(cx, cy)| (cy * w + cx, p[2]))).collect();
         g.for_centres(t, |i, z| hits.push((i, z)));
@@ -277,6 +273,26 @@ pub fn generate(col: &Path, gta_water: &Path, out: &Path, placement: Placement, 
             raise(&mut g.water_col, i, z);
         }
     }
+    let mut bed_hits = 0;
+    for (t, fill) in &tris {
+        let mut hits: Vec<(usize, f32)> = t.iter().filter_map(|p| g.cell_of(p[0], p[1]).map(|(cx, cy)| (cy * w + cx, p[2]))).collect();
+        g.for_centres(t, |i, z| hits.push((i, z)));
+        for (i, z) in hits {
+            raise(&mut g.top, i, z);
+            if !(g.bottom[i] <= z) {
+                g.bottom[i] = z;
+            }
+            let surface = g.water_col[i] + WATER_COLLISION_DEPTH;
+            if *fill && z < surface && z >= surface - LAKE_BED_DEPTH {
+                bed_hits += 1;
+                continue;
+            }
+            if z >= land_z {
+                g.land[i] = true;
+            }
+        }
+    }
+    println!("water: {bed_hits} hole fill points under Burnout's water surface are lake bed, not land");
 
     // Lakes: flat water meshes above sea level, highest surface per cell.
     let mut lake_tris = 0;

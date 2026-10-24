@@ -155,7 +155,7 @@ pub struct GpsWatch {
 }
 
 impl GpsWatch {
-    pub fn update(&mut self, player: Vec3, heading: f32, now: i32) {
+    fn load(&mut self) {
         if !self.loaded {
             self.loaded = true;
             self.roads = Roads::load();
@@ -163,6 +163,35 @@ impl GpsWatch {
                 crate::log(&format!("gps: no {FILE}; no routes"));
             }
         }
+    }
+
+    /// The road nearest `p` (within NEAR m) with the heading (degrees, GTA's:
+    /// 0 north, anticlockwise) traffic drives it: where GTA's own switch is
+    /// going, as a road (switch.rs).
+    pub fn nearest_road(&mut self, p: Vec3) -> Option<(Vec3, f32)> {
+        self.load();
+        let roads = self.roads.as_ref()?;
+        let i = roads.nearest(p, |i, d| if roads.out[i].is_empty() { f32::MAX } else { d })?;
+        let &(j, _) = roads.out[i].first()?;
+        let (a, b) = (roads.pos[i], roads.pos[j as usize]);
+        Some((a, (-(b.x - a.x)).atan2(b.y - a.y).to_degrees().rem_euclid(360.0)))
+    }
+
+    /// The same, however far: GTA's place for a character can be well
+    /// outside Paradise City (switch.rs).
+    pub fn nearest_road_any(&mut self, p: Vec3) -> Option<(Vec3, f32)> {
+        self.load();
+        let roads = self.roads.as_ref()?;
+        let i = (0..roads.pos.len())
+            .filter(|&i| !roads.out[i].is_empty())
+            .min_by(|&a, &b| dist(roads.pos[a], p).total_cmp(&dist(roads.pos[b], p)))?;
+        let (j, _) = roads.out[i][0];
+        let (a, b) = (roads.pos[i], roads.pos[j as usize]);
+        Some((a, (-(b.x - a.x)).atan2(b.y - a.y).to_degrees().rem_euclid(360.0)))
+    }
+
+    pub fn update(&mut self, player: Vec3, heading: f32, now: i32) {
+        self.load();
         if !n::is_waypoint_active() {
             if self.waypoint.take().is_some() {
                 n::clear_gps_custom_route();

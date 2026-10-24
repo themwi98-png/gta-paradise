@@ -106,7 +106,15 @@ pub struct Shops {
     cars: Option<Rc<Vec<Car>>>,
     /// Paint shops' random colours (xorshift; seeded from the clock).
     rng: u32,
+    /// After a repair: the car, its velocity and spin before it, until when
+    /// to keep putting them back, and how many times they were.
+    hold: Option<(i32, Vec3, Vec3, i32, u32)>,
 }
+
+/// A repair (SET_VEHICLE_FIXED) resets the car's physics, its speed with it:
+/// a car driving through at 80 m/s stopped dead and wrecked. For this long
+/// after one, its motion is put back whenever it has lost some.
+const REPAIR_HOLD_MS: i32 = 300;
 
 /// A vehicle the junkyard offers.
 struct Car {
@@ -217,7 +225,7 @@ impl Shops {
         let count = |k: Kind| shops.iter().filter(|s| s.kind == k).count();
         let lots = shops.iter().filter(|s| s.lot.is_some()).count();
         crate::log(&format!("shops: {} junkyards ({lots} with a display lot), {} auto repairs, {} gas stations, {} paint shops from {FILE}", count(Kind::Junkyard), count(Kind::Repair), count(Kind::Gas), count(Kind::Paint)));
-        Self { shops, blips: Vec::new(), message: None, menu: Menu::Closed, cars: None, rng: 0 }
+        Self { shops, blips: Vec::new(), message: None, menu: Menu::Closed, cars: None, rng: 0, hold: None }
     }
 
     /// The plugin's blips (the missions module leaves them alone).
@@ -248,6 +256,28 @@ impl Shops {
         !matches!(self.menu, Menu::Closed)
     }
 
+    /// Just after a repair, while the car's speed is being put back: no
+    /// crash should be read from the reset.
+    pub fn holding(&self) -> bool {
+        self.hold.is_some()
+    }
+
+    /// Puts the car's motion back after a repair (see REPAIR_HOLD_MS).
+    fn keep_motion(&mut self, now: i32) {
+        let Some((car, v, w, until, restored)) = self.hold.as_mut() else { return };
+        let saved = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+        if now >= *until || !n::does_entity_exist(*car) {
+            crate::log(&format!("shops: repair kept the car's speed ({saved:.1} m/s; put back {restored} time(s))"));
+            self.hold = None;
+            return;
+        }
+        if n::get_entity_speed(*car) < saved * 0.9 {
+            n::set_entity_velocity(*car, v.x, v.y, v.z);
+            n::set_entity_angular_velocity(*car, w.x, w.y, w.z);
+            *restored += 1;
+        }
+    }
+
     pub fn update(&mut self, on: bool, ped: i32, driven: i32, boost: &mut crate::boost::Boost, now: i32) {
         if !on {
             self.close_menu();
@@ -257,6 +287,7 @@ impl Shops {
         if self.blips.is_empty() && !self.shops.is_empty() {
             self.add_blips();
         }
+        self.keep_motion(now);
         if self.busy() {
             self.run_menu(ped, now);
         } else {
@@ -303,10 +334,15 @@ impl Shops {
         match kind {
             Kind::Repair => {
                 let (engine, body) = (n::get_vehicle_engine_health(car), n::get_vehicle_body_health(car));
+                let (v, w) = (n::get_entity_velocity(car), n::get_entity_rotation_velocity(car));
                 n::repair_vehicle(car);
+                n::set_entity_velocity(car, v.x, v.y, v.z);
+                n::set_entity_angular_velocity(car, w.x, w.y, w.z);
+                self.hold = Some((car, v, w, now + REPAIR_HOLD_MS, 0));
                 n::play_sound_frontend("PURCHASE", "HUD_LIQUOR_STORE_SOUNDSET");
                 self.say("REPAIRED", now);
-                crate::log(&format!("shops: {at}: car repaired (engine was {engine:.0}, body {body:.0})"));
+                let speed = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+                crate::log(&format!("shops: {at}: car repaired at {speed:.1} m/s (engine was {engine:.0}, body {body:.0})"));
             }
             Kind::Gas => {
                 let before = boost.gauge;
