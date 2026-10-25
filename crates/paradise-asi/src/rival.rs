@@ -30,8 +30,8 @@
 //!   off, and a driver found out of the seat or climbing out is put
 //!   straight back in (logged).
 //! - Wrecked (car undrivable or gone, driver dead or out of the car) or
-//!   stuck (under STUCK_MOVE m in STUCK_MS): put back on its route
-//!   RESPAWN_MS later, repaired (a new car or driver if they're gone).
+//!   stuck (under STUCK_MOVE m in `stuck_ms`, `@race_stuck`): put back on
+//!   its route `respawn_ms` (`@race_respawn`) later, repaired (a new car or driver if they're gone).
 //! - Off its route (a wrong turn: over OFF_ROUTE m from it), or with no
 //!   clear line to the route ahead: straight for the furthest route point
 //!   ahead it has a clear line to, over kerbs, through car parks; with none
@@ -107,10 +107,8 @@ const REAIM_MS: i32 = 1000;
 /// Where it is on the route: the nearest of the next CATCH_UP points.
 const CATCH_UP: usize = 15;
 const STUCK_MOVE: f32 = 10.0;
-const STUCK_MS: i32 = 6000;
 /// A catch-up move never ends nearer the player than this (m).
 const UNSEEN: f32 = 120.0;
-const RESPAWN_MS: i32 = 2500;
 /// Put back no closer than this (m) to the player.
 const CLEAR_OF_PLAYER: f32 = 15.0;
 /// Boost gauge: full after BOOST_FILL_S s at FAST m/s or more; burnt from
@@ -185,6 +183,11 @@ pub struct Rival {
     launching: bool,
     /// Its speed limits, times (`@race_rival_speed`).
     pub speed: f32,
+    /// Stuck after this long (ms) without moving STUCK_MOVE m
+    /// (`@race_stuck`); put back this long (ms) after a wreck or getting
+    /// stuck (`@race_respawn`).
+    pub stuck_ms: i32,
+    pub respawn_ms: i32,
     /// When its driver was last put back in the seat (logged once a second).
     reseated_at: i32,
     last_flame: i32,
@@ -227,6 +230,8 @@ impl Rival {
             boosting: false,
             launching: false,
             speed: 1.0,
+            stuck_ms: 6000,
+            respawn_ms: 2500,
             reseated_at: i32::MIN / 2,
             last_flame: 0,
             braking: None,
@@ -401,7 +406,7 @@ impl Rival {
             return None;
         }
         if let Some((since, why)) = self.wrecked.clone() {
-            if now - since >= RESPAWN_MS && self.put_back(k, player, driver_model, gps, now) {
+            if now - since >= self.respawn_ms && self.put_back(k, player, driver_model, gps, now) {
                 crate::log(&format!("races: rival {} back on the road after wreck {} ({why})", k + 1, self.wrecks));
                 self.wrecked = None;
             }
@@ -412,7 +417,7 @@ impl Rival {
             self.boosting = false;
             PropShield::drop_rival(&mut self.shield);
             let at = if n::does_entity_exist(self.car) { n::get_entity_coords(self.car) } else { Vec3::default() };
-            crate::log(&format!("races: rival {} wrecked ({why}) at ({:.0}, {:.0}, {:.0}); back on its route in {:.1} s", k + 1, at.x, at.y, at.z, RESPAWN_MS as f32 / 1000.0));
+            crate::log(&format!("races: rival {} wrecked ({why}) at ({:.0}, {:.0}, {:.0}); back on its route in {:.1} s", k + 1, at.x, at.y, at.z, self.respawn_ms as f32 / 1000.0));
             self.wrecked = Some((now, why));
             return None;
         }
@@ -465,7 +470,7 @@ impl Rival {
             if flat(at, from) >= STUCK_MOVE {
                 self.progress = Some((at, now));
             }
-            if flat(at, from) >= STUCK_MOVE || now - since < STUCK_MS {
+            if flat(at, from) >= STUCK_MOVE || now - since < self.stuck_ms {
                 return None;
             }
             "stuck"

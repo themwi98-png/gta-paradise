@@ -27,6 +27,8 @@
 //!   road in a fresh copy. Settings: `@wreck`, `@wreck_speed`,
 //!   `@impact_speed`, `@wreck_explode`, `@respawn_speed`, `@crash_time`,
 //!   `@slowmo`, `@crash_cam`.
+//! - Loose panels (`panels.rs`): a bonnet or boot a crash leaves swinging
+//!   open breaks off instead of blocking the view.
 //! - Burnout-style boost (`boost.rs`): A / X while driving (GTA's duck)
 //!   burns a gauge for speed and exhaust flames; driving fast, near misses,
 //!   drifts and jumps refill it. Settings: `@boost...`.
@@ -76,6 +78,7 @@ mod junctions;
 mod missions;
 mod natives;
 mod overlay;
+mod panels;
 mod physics;
 mod propshield;
 mod races;
@@ -238,6 +241,8 @@ fn load_settings() -> Settings {
             ["@race_opponents", v, ..] => s.race.opponents = num(v, 3.0).clamp(0.0, 8.0) as usize,
             ["@race_hold", v, ..] => s.race.hold_ms = (num(v, 2.5).clamp(0.2, 10.0) * 1000.0) as i32,
             ["@race_rival_speed", v, ..] => s.race.rival_speed = num(v, s.race.rival_speed).clamp(0.5, 2.0),
+            ["@race_stuck", v, ..] => s.race.stuck_ms = (num(v, 6.0).clamp(1.0, 60.0) * 1000.0) as i32,
+            ["@race_respawn", v, ..] => s.race.respawn_ms = (num(v, 2.5).clamp(0.0, 30.0) * 1000.0) as i32,
             ["@race_traffic", v, ..] => s.race_traffic = num(v, s.race_traffic).clamp(0.0, 3.0),
             ["@perf", v, ..] => s.perf = on(v),
             ["@air_control", v, ..] => s.air.control = num(v, s.air.control).clamp(0.0, 1.0),
@@ -844,6 +849,7 @@ extern "C" fn script_main() {
             if let Some(w) = wallpass.as_mut() {
                 w.update(n::get_vehicle_ped_is_in(ped), now);
             }
+            panels::update(driven);
             perf.done(9);
             // A junkyard has the car (stopping it, or its menu is open), a
             // repair's physics reset is being undone, or a character switch

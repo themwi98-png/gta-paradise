@@ -249,6 +249,20 @@ pub fn set_vehicle_door_broken(vehicle: i32, door: i32, delete: bool) {
     call(0xD4D4F6A4AB575A33, args!(vehicle, door, delete));
 }
 
+pub fn get_is_door_valid(vehicle: i32, door: i32) -> bool {
+    ret_bool(call(0x645F4B6E8499F632, args!(vehicle, door)))
+}
+
+/// IS_VEHICLE_DOOR_DAMAGED: broken off.
+pub fn is_vehicle_door_damaged(vehicle: i32, door: i32) -> bool {
+    ret_bool(call(0xB8E181E559464527, args!(vehicle, door)))
+}
+
+/// GET_VEHICLE_DOOR_ANGLE_RATIO: 0 shut, 1 fully open.
+pub fn get_vehicle_door_angle_ratio(vehicle: i32, door: i32) -> f32 {
+    ret_f32(call(0xFE3F9C29F7B32BD5, args!(vehicle, door)))
+}
+
 pub fn set_vehicle_tyre_burst(vehicle: i32, index: i32) {
     call(0xEC6A202EE4960385, args!(vehicle, index, true, 1000.0f32));
 }

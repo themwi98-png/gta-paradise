@@ -152,11 +152,16 @@ pub struct RaceSettings {
     pub hold_ms: i32,
     /// Rivals' speed limits, times (`@race_rival_speed`).
     pub rival_speed: f32,
+    /// Rivals count as stuck after this long (ms, `@race_stuck`), and are
+    /// put back this long (ms) after a wreck or getting stuck
+    /// (`@race_respawn`).
+    pub stuck_ms: i32,
+    pub respawn_ms: i32,
 }
 
 impl Default for RaceSettings {
     fn default() -> Self {
-        Self { opponents: 3, hold_ms: 2500, rival_speed: 1.1 }
+        Self { opponents: 3, hold_ms: 2500, rival_speed: 1.1, stuck_ms: 6000, respawn_ms: 2500 }
     }
 }
 
@@ -444,12 +449,14 @@ impl Races {
             crate::log(&format!("races: rival {} at ({right:+.1} m right, {ahead:+.1} m ahead), car {car}, driver {ped}", run.rivals.len() + 1));
             let mut v = Rival::new(car, ped, model);
             v.speed = self.settings.rival_speed;
+            v.stuck_ms = self.settings.stuck_ms;
+            v.respawn_ms = self.settings.respawn_ms;
             v.mark(run.rivals.len());
             run.rivals.push(v);
         }
         // (The models stay loaded for rivals put back after a wreck.)
         if opponents > 0 {
-            crate::log(&format!("races: {} of {opponents} rival(s) lined up, speed limits x{:.2}", run.rivals.len(), self.settings.rival_speed));
+            crate::log(&format!("races: {} of {opponents} rival(s) lined up, speed limits x{:.2}, stuck after {:.1} s, put back after {:.1} s", run.rivals.len(), self.settings.rival_speed, self.settings.stuck_ms as f32 / 1000.0, self.settings.respawn_ms as f32 / 1000.0));
         }
         run.phase = Phase::Countdown(now, 0);
     }
