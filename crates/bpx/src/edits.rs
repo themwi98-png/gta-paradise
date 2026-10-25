@@ -150,6 +150,10 @@ fn centre(r: &[[f32; 3]; 2]) -> [f32; 3] {
     [(r[0][0] + r[1][0]) * 0.5, (r[0][1] + r[1][1]) * 0.5, (r[0][2] + r[1][2]) * 0.5]
 }
 
+fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
 fn parse_id(s: &str) -> Option<(usize, usize)> {
     let (a, b) = s.split_once(':')?;
     Some((a.parse().ok()?, b.parse().ok()?))
@@ -300,6 +304,8 @@ impl TrafficEdits {
                 }
             }
         };
+        // Drawn lanes: rungs, speed, traffic, and whether each end joined a lane.
+        let mut drawn_lanes: Vec<(Vec<[[f32; 3]; 2]>, f32, u16, bool, bool)> = Vec::new();
         for l in new_lanes {
             let pts: Vec<[f32; 3]> = l["points"].as_array().into_iter().flatten().filter_map(vec3).collect();
             if pts.len() < 2 {
@@ -319,14 +325,43 @@ impl TrafficEdits {
                     [[p[0] - r[0] * half, p[1], p[2] - r[1] * half], [p[0] + r[0] * half, p[1], p[2] + r[1] * half]]
                 })
                 .collect();
-            if let Some(r) = nearest(&ends, pts[0]) {
+            let start = nearest(&ends, pts[0]);
+            if let Some(r) = start {
                 rungs[0] = r;
             }
-            if let Some(r) = nearest(&starts, pts[n - 1]) {
+            let end = nearest(&starts, pts[n - 1]);
+            if let Some(r) = end {
                 rungs[n - 1] = r;
             }
             let traffic = l["traffic"].as_f64().map_or(DRAWN_TRAFFIC, |v| v.round().clamp(0.0, 99.0) as u16);
-            added.push(blank_section(rungs, l["speed"].as_f64().unwrap_or(13.4) as f32, traffic));
+            drawn_lanes.push((rungs, l["speed"].as_f64().unwrap_or(13.4) as f32, traffic, start.is_some(), end.is_some()));
+        }
+        // A drawn lane's end that joined nothing joins the nearest unjoined
+        // drawn lane's start within SNAP m: a lane drawn in pieces is one road.
+        let mut chained = 0;
+        for i in 0..drawn_lanes.len() {
+            if drawn_lanes[i].4 {
+                continue;
+            }
+            let end = centre(drawn_lanes[i].0.last().unwrap());
+            let next = (0..drawn_lanes.len())
+                .filter(|&j| j != i && !drawn_lanes[j].3)
+                .map(|j| (dist3(centre(&drawn_lanes[j].0[0]), end), j))
+                .filter(|(d, _)| *d <= SNAP)
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            if let Some((_, j)) = next {
+                drawn_lanes[j].0[0] = *drawn_lanes[i].0.last().unwrap();
+                drawn_lanes[i].4 = true;
+                drawn_lanes[j].3 = true;
+                chained += 1;
+            }
+        }
+        let unjoined = drawn_lanes.iter().map(|l| (!l.3) as usize + (!l.4) as usize).sum::<usize>();
+        if !drawn_lanes.is_empty() {
+            eprintln!("drawn lanes: {chained} joined end to end, {unjoined} end(s) joining no lane (within {SNAP} m)");
+        }
+        for (rungs, speed, traffic, _, _) in drawn_lanes {
+            added.push(blank_section(rungs, speed, traffic));
         }
         let drawn = added.len() - connections;
         if let Some(h0) = t.hulls.first_mut() {

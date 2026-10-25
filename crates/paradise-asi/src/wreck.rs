@@ -7,8 +7,10 @@
 //!   glass and panels on harder hits;
 //! - above `@wreck_speed`: a wreck. The car is smashed up and blown apart in
 //!   slow motion ("WRECKED"), then the screen fades and the player comes
-//!   back on the nearest road, in a fresh copy of the same car (colours,
-//!   upgrades and plate kept), already rolling.
+//!   back on a road near the crash, facing the way they were going (of the
+//!   RESPAWN_NODES nearest road nodes, the one whose road best lines up
+//!   with that, so not a crossing road at a junction), in a fresh copy of
+//!   the same car (colours, upgrades and plate kept), already rolling.
 //!
 //! Burnout's crash camera starts just before the impact, but only when the
 //! wreck is all but certain (otherwise it starts at the impact): lines
@@ -127,6 +129,12 @@ impl Default for WreckSettings {
     }
 }
 
+/// The respawn road: of this many nearest road nodes, the nearest after
+/// adding RESPAWN_TURN m for a road at right angles to the travel (less for
+/// less of an angle; heights count double).
+const RESPAWN_NODES: i32 = 8;
+const RESPAWN_TURN: f32 = 40.0;
+
 /// Wheel bones.
 const WHEELS: [&str; 6] = ["wheel_lf", "wheel_rf", "wheel_lm1", "wheel_rm1", "wheel_lr", "wheel_rr"];
 
@@ -213,6 +221,8 @@ const COOLDOWN_MS: i32 = 400;
 const PROP_DV: f32 = 2.5;
 /// INPUT_VEH_ACCELERATE
 const CONTROL_ACCELERATE: i32 = 71;
+/// INPUT_VEH_BRAKE
+const CONTROL_BRAKE: i32 = 72;
 /// Front of a car from its centre (m), where the look-ahead lines start
 /// counting distance; and the corner lines' offset to each side.
 const NOSE: f32 = 2.4;
@@ -461,7 +471,12 @@ impl Wreck {
         }
         // Wheels down, accelerator held, going nowhere. Upside down or on its
         // side doesn't count: GTA lets the driver roll the car back over.
-        let jammed = n::get_control_normal(CONTROL_ACCELERATE) > 0.5 && n::get_entity_speed(veh) < 1.5 && n::is_vehicle_on_all_wheels(veh);
+        // Nor does brake held too: a burnout on purpose (and how a race is
+        // started, races.rs).
+        let jammed = n::get_control_normal(CONTROL_ACCELERATE) > 0.5
+            && n::get_control_normal(CONTROL_BRAKE) < 0.5
+            && n::get_entity_speed(veh) < 1.5
+            && n::is_vehicle_on_all_wheels(veh);
         if jammed {
             let since = *self.stuck_since.get_or_insert(now);
             if now - since >= (s.stuck_time * 1000.0) as i32 {
@@ -869,16 +884,35 @@ impl Wreck {
         let wreck_pos = n::get_entity_coords(veh);
         let cleared = if s.clear_radius > 0.0 { involved.remove() } else { 0 } + clear_around(ped, &[veh], spare, &[crash_pos, wreck_pos], s.clear_radius);
 
-        // Back on the nearest road, facing the way the player was going.
-        let (spot, heading) = match n::closest_vehicle_node(crash_pos) {
-            Some((p, h)) => {
-                let d = (h - travel).rem_euclid(360.0);
-                let h = if d > 90.0 && d < 270.0 { (h + 180.0).rem_euclid(360.0) } else { h };
+        // Back on a road near the crash, facing the way the player was
+        // going: the nearby road that lines up best with that.
+        let mut best: Option<(f32, Vec3, f32, i32, f32)> = None;
+        for nth in 1..=RESPAWN_NODES {
+            let Some((p, h)) = n::nth_closest_vehicle_node(crash_pos, nth) else { break };
+            // Either way along the road: the way nearer the travel.
+            let d = (h - travel).rem_euclid(360.0);
+            let h = if d > 90.0 && d < 270.0 { (h + 180.0).rem_euclid(360.0) } else { h };
+            let off = ((h - travel + 540.0).rem_euclid(360.0) - 180.0).abs();
+            let dist = (p.x - crash_pos.x).hypot(p.y - crash_pos.y).hypot(2.0 * (p.z - crash_pos.z));
+            let score = dist + RESPAWN_TURN * (1.0 - off.to_radians().cos());
+            if best.is_none_or(|b| score < b.0) {
+                best = Some((score, p, h, nth, off));
+            }
+        }
+        let (spot, heading) = match best {
+            Some((_, p, h, nth, off)) => {
+                crate::log(&format!(
+                    "wreck respawn: road node {nth} of the {RESPAWN_NODES} nearest, {:.0} m from the crash, facing {h:.0} (travel {travel:.0}, {off:.0} off)",
+                    (p.x - crash_pos.x).hypot(p.y - crash_pos.y)
+                ));
                 // Nodes sit on the road's centre line; keep right of it.
                 let r = h.to_radians();
                 (Vec3::new(p.x + r.cos() * 2.0, p.y + r.sin() * 2.0, p.z), h)
             }
-            None => (crash_pos, travel),
+            None => {
+                crate::log(&format!("wreck respawn: no road node near the crash; where it was, facing {travel:.0}"));
+                (crash_pos, travel)
+            }
         };
         n::clear_ped_tasks_immediately(ped);
         // Up from a ragdoll before going into the new car.

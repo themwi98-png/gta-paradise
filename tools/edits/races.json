@@ -1,0 +1,86 @@
+{
+ "format": "paradise-races-v1",
+ "races": [
+  {
+   "name": "Race 1",
+   "start": [
+    3041.1,
+    1938.6,
+    6.4
+   ],
+   "heading": 179.7,
+   "checkpoints": [],
+   "finish": [
+    3031.6,
+    -98.4,
+    21.8
+   ]
+  },
+  {
+   "name": "Race 2",
+   "start": [
+    3380,
+    1585.9,
+    10
+   ],
+   "heading": 180.2,
+   "checkpoints": [],
+   "finish": [
+    58.5,
+    -1263.4,
+    9.9
+   ]
+  },
+  {
+   "name": "Race 3",
+   "start": [
+    2896.4,
+    2168.1,
+    4.9
+   ],
+   "heading": 91.4,
+   "checkpoints": [
+    [
+     -3441.3,
+     3332,
+     481.9
+    ]
+   ],
+   "finish": [
+    -2012.6,
+    -1585.4,
+    64
+   ]
+  },
+  {
+   "name": "Race 4",
+   "start": [
+    2970.5,
+    -268.5,
+    7.9
+   ],
+   "heading": 302.4,
+   "checkpoints": [],
+   "finish": [
+    4685.4,
+    937.6,
+    41.4
+   ]
+  },
+  {
+   "name": "Race 5",
+   "start": [
+    4699.9,
+    932.7,
+    41.4
+   ],
+   "heading": 70.9,
+   "checkpoints": [],
+   "finish": [
+    2993.3,
+    2147.9,
+    4.9
+   ]
+  }
+ ]
+}

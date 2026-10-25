@@ -151,30 +151,11 @@ impl Boost {
             self.stop();
         }
         if self.boosting {
-            n::set_vehicle_cheat_power_increase(veh, ENGINE_POWER * s.power.max(1.0));
             self.gauge = (self.gauge - dt / s.seconds.max(0.5)).max(0.0);
             if self.gauge <= 0.0 {
                 self.locked = true;
             }
-            let top = (n::get_vehicle_estimated_max_speed(veh) * s.top_mult).clamp(s.min_top, s.max_top);
-            if !in_air && local.y < top {
-                // Push along the car's nose; fades out approaching the top.
-                let a = s.accel * (1.0 - (local.y / top).max(0.0).powi(4)) * dt;
-                let f = n::get_entity_forward_vector(veh);
-                let v = n::get_entity_velocity(veh);
-                n::set_entity_velocity(veh, v.x + f.x * a, v.y + f.y * a, v.z + f.z * a);
-            }
-            if now - self.last_flame > 45 {
-                self.last_flame = now;
-                if n::request_ptfx_asset("core") {
-                    for b in EXHAUSTS {
-                        let bone = n::get_entity_bone_index_by_name(veh, b);
-                        if bone >= 0 {
-                            n::ptfx_on_bone("core", "veh_backfire", veh, bone, 1.4);
-                        }
-                    }
-                }
-            }
+            push(s, veh, dt, now, &mut self.last_flame);
         }
 
         // --- Earning boost ---
@@ -277,6 +258,33 @@ impl Boost {
 /// Is the car driving against the traffic on its road? On a two-way road the
 /// road's nodes run along the line between the two directions, and traffic
 /// keeps right of it; on a one-way road, any driving against it counts.
+/// One frame of boost on `veh`: more engine power, a push along its nose
+/// up to the boosted top speed, exhaust flames (every 45 ms, `last_flame`).
+/// The player's boost and race rivals' (races.rs).
+pub fn push(s: &BoostSettings, veh: i32, dt: f32, now: i32, last_flame: &mut i32) {
+    n::set_vehicle_cheat_power_increase(veh, ENGINE_POWER * s.power.max(1.0));
+    let forward = n::get_entity_speed_vector_relative(veh).y;
+    let top = (n::get_vehicle_estimated_max_speed(veh) * s.top_mult).clamp(s.min_top, s.max_top);
+    if !n::is_entity_in_air(veh) && forward < top {
+        // Push along the car's nose; fades out approaching the top.
+        let a = s.accel * (1.0 - (forward / top).max(0.0).powi(4)) * dt;
+        let f = n::get_entity_forward_vector(veh);
+        let v = n::get_entity_velocity(veh);
+        n::set_entity_velocity(veh, v.x + f.x * a, v.y + f.y * a, v.z + f.z * a);
+    }
+    if now - *last_flame > 45 {
+        *last_flame = now;
+        if n::request_ptfx_asset("core") {
+            for b in EXHAUSTS {
+                let bone = n::get_entity_bone_index_by_name(veh, b);
+                if bone >= 0 {
+                    n::ptfx_on_bone("core", "veh_backfire", veh, bone, 1.4);
+                }
+            }
+        }
+    }
+}
+
 fn wrong_side(veh: i32) -> bool {
     let p = n::get_entity_coords(veh);
     let Some((a, b, fwd, back)) = n::closest_road(p) else { return false };

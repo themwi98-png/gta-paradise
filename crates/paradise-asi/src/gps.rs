@@ -8,10 +8,16 @@
 //!
 //! - A route is found (A*, shortest by distance) when the player sets a
 //!   waypoint, from the road nearest the player (preferring one going the
-//!   way they're heading) to the road nearest the waypoint.
+//!   way they're heading) to the road nearest the waypoint. Burnout style,
+//!   it goes either way down any road: one-way streets and the side of the
+//!   road don't count (the user's call, 2026-10-24).
 //! - Leaving it (over OFF_ROUTE m from it) finds a new one, at most every
 //!   REROUTE_MS; so does moving the waypoint. Removing it clears the route.
-//! - Logged: each route (length, points drawn) or why there's none.
+//! - A race's next checkpoint (races.rs, `set_target`) takes the
+//!   waypoint's place while the race is on.
+//! - The line is HUD_COLOUR_WAYPOINT, set to ROUTE_RGBA once.
+//! - Logged: each route (length, points drawn, whether the pause menu was
+//!   open) or why there's none.
 
 use crate::natives as n;
 use crate::shv::Vec3;
@@ -21,16 +27,22 @@ use std::collections::{BinaryHeap, HashMap};
 const FILE: &str = "paradise_roads.txt";
 /// Blip sprite of the player's waypoint.
 const WAYPOINT_SPRITE: i32 = 8;
-/// HUD_COLOUR_WAYPOINT, and the line's width on the radar and pause map.
-const ROUTE_COLOUR: i32 = 83;
+/// HUD_COLOUR_WAYPOINT (not BLIP_COLOUR_WAYPOINT, 83, which as a HUD
+/// colour is a dark player colour), the colour it's set to (#a147e9, the
+/// user's pick), and the line's width on the radar and pause map.
+const ROUTE_COLOUR: i32 = 142;
+const ROUTE_RGBA: [i32; 4] = [0xa1, 0x47, 0xe9, 255];
 const RADAR_WIDTH: i32 = 16;
 const MAP_WIDTH: i32 = 16;
 /// Spatial grid cell for finding the nearest road (m).
 const CELL: f32 = 64.0;
 /// A start or end road this far (m) away is too far.
 const NEAR: f32 = 300.0;
-/// A road going against the player's heading counts as this much (m)
-/// further away when choosing where the route starts.
+/// A road across the player's heading counts as up to this much (m)
+/// further away when choosing where the route starts (a road straight
+/// ahead or behind: nothing; one at right angles: all of it). So a race
+/// starting at a junction starts down the road it faces, not along the
+/// cross street it's nearer to.
 const WRONG_WAY: f32 = 40.0;
 const OFF_ROUTE: f32 = 40.0;
 const REROUTE_MS: i32 = 1500;
@@ -41,8 +53,10 @@ const MAX_POINTS: usize = 400;
 
 struct Roads {
     pos: Vec<Vec3>,
-    /// Links that can be driven from each node: (to, length).
+    /// Links traffic drives from each node: (to, length).
     out: Vec<Vec<(u32, f32)>>,
+    /// The same links both ways, for routes.
+    both: Vec<Vec<(u32, f32)>>,
     grid: HashMap<(i32, i32), Vec<u32>>,
 }
 
@@ -80,8 +94,16 @@ impl Roads {
             grid.entry(cell(p.x, p.y)).or_default().push(i as u32);
         }
         let links: usize = out.iter().map(Vec::len).sum();
-        crate::log(&format!("gps: {} road nodes, {links} drivable links from {FILE}", pos.len()));
-        Some(Self { pos, out, grid })
+        let mut both = out.clone();
+        for (a, l) in out.iter().enumerate() {
+            for &(b, len) in l {
+                if !out[b as usize].iter().any(|&(c, _)| c as usize == a) {
+                    both[b as usize].push((a as u32, len));
+                }
+            }
+        }
+        crate::log(&format!("gps: {} road nodes, {links} drivable links from {FILE} (routes use them both ways)", pos.len()));
+        Some(Self { pos, out, both, grid })
     }
 
     /// The node near `p` with the lowest score (`score(node, distance)`),
@@ -109,7 +131,8 @@ impl Roads {
         best.map(|(_, i)| i)
     }
 
-    /// Shortest drivable route from node `a` to node `b` (A*), as nodes.
+    /// Shortest route from node `a` to node `b` (A*, any road either way),
+    /// as nodes.
     fn route(&self, a: usize, b: usize) -> Option<Vec<usize>> {
         let goal = self.pos[b];
         let mut cost = vec![f32::INFINITY; self.pos.len()];
@@ -129,7 +152,7 @@ impl Roads {
                 path.reverse();
                 return Some(path);
             }
-            for &(j, len) in &self.out[i] {
+            for &(j, len) in &self.both[i] {
                 let j = j as usize;
                 let c = cost[i] + len;
                 if c < cost[j] {
@@ -148,7 +171,10 @@ impl Roads {
 pub struct GpsWatch {
     roads: Option<Roads>,
     loaded: bool,
+    /// Where the route goes (the waypoint or the race's target).
     waypoint: Option<Vec3>,
+    /// A race's next checkpoint, in place of the waypoint.
+    target: Option<Vec3>,
     /// The route drawn: its points.
     route: Vec<Vec3>,
     last_route: i32,
@@ -158,6 +184,15 @@ impl GpsWatch {
     fn load(&mut self) {
         if !self.loaded {
             self.loaded = true;
+            let was = n::get_hud_colour(ROUTE_COLOUR);
+            // Only if it is the waypoint's purple (blue the most), in case
+            // this game has another colour at that index.
+            if was[2] > 150 && was[2] > was[0] && was[0] > was[1] {
+                n::replace_hud_colour(ROUTE_COLOUR, ROUTE_RGBA);
+                crate::log(&format!("gps: route colour (HUD colour {ROUTE_COLOUR}) {was:?} -> {ROUTE_RGBA:?}"));
+            } else {
+                crate::log(&format!("gps: HUD colour {ROUTE_COLOUR} is {was:?}, not the waypoint's purple; left as it is"));
+            }
             self.roads = Roads::load();
             if self.roads.is_none() {
                 crate::log(&format!("gps: no {FILE}; no routes"));
@@ -190,60 +225,113 @@ impl GpsWatch {
         Some((a, (-(b.x - a.x)).atan2(b.y - a.y).to_degrees().rem_euclid(360.0)))
     }
 
+    /// A race's next checkpoint (None: back to the waypoint).
+    pub fn set_target(&mut self, target: Option<Vec3>) {
+        self.target = target;
+    }
+
     pub fn update(&mut self, player: Vec3, heading: f32, now: i32) {
         self.load();
-        if !n::is_waypoint_active() {
+        let goal = match self.target {
+            Some(t) => Some(t),
+            None if n::is_waypoint_active() => Some(n::blip_info_coords(n::first_blip_info_id(WAYPOINT_SPRITE))),
+            None => None,
+        };
+        let Some(wp) = goal else {
             if self.waypoint.take().is_some() {
                 n::clear_gps_custom_route();
                 self.route.clear();
-                crate::log("gps: waypoint removed, route cleared");
+                crate::log("gps: no waypoint or race checkpoint, route cleared");
             }
             return;
-        }
-        let wp = n::blip_info_coords(n::first_blip_info_id(WAYPOINT_SPRITE));
+        };
         let moved = self.waypoint.is_none_or(|w| (w.x - wp.x).abs() + (w.y - wp.y).abs() > 1.0);
         let off = !self.route.is_empty() && off_route(&self.route, player) > OFF_ROUTE;
         if moved || ((off || self.route.is_empty()) && now - self.last_route >= REROUTE_MS) {
             self.waypoint = Some(wp);
             self.last_route = now;
-            self.find(player, heading, wp, if moved { "new waypoint" } else if off { "off the route" } else { "no route yet" });
+            let why = match (moved, self.target.is_some()) {
+                (true, true) => "race checkpoint",
+                (true, false) => "new waypoint",
+                _ if off => "off the route",
+                _ => "no route yet",
+            };
+            self.find(player, heading, wp, why);
         }
     }
 
-    fn find(&mut self, player: Vec3, heading: f32, wp: Vec3, why: &str) {
-        let Some(roads) = &self.roads else { return };
+    /// The roads from `from` (going `heading`, GTA degrees) to `to`, as
+    /// road node positions; `flat_end`: the end has no real height (a
+    /// waypoint), so the nearest road by position. Err: why there's none.
+    fn path(&self, from: Vec3, heading: f32, to: Vec3, flat_end: bool) -> Result<Vec<Vec3>, String> {
+        let Some(roads) = &self.roads else { return Err(format!("no {FILE}")) };
         // GTA's heading: 0 = north (+y), anticlockwise.
         let (hx, hy) = (-heading.to_radians().sin(), heading.to_radians().cos());
-        let start = roads.nearest(player, |i, d| {
+        let start = roads.nearest(from, |i, d| {
             let p = roads.pos[i];
-            let along = roads.out[i].iter().map(|&(j, len)| {
+            let along = roads.both[i].iter().map(|&(j, _)| {
                 let q = roads.pos[j as usize];
-                ((q.x - p.x) * hx + (q.y - p.y) * hy) / len.max(0.1)
+                ((q.x - p.x) * hx + (q.y - p.y) * hy) / (q.x - p.x).hypot(q.y - p.y).max(0.1)
             });
-            d + if along.fold(-1.0f32, f32::max) < 0.0 { WRONG_WAY } else { 0.0 }
+            d + WRONG_WAY * (1.0 - along.fold(-1.0f32, f32::max).max(0.0))
         });
-        // The waypoint has no real height: the nearest road by position.
-        let end = roads.nearest(Vec3::new(wp.x, wp.y, player.z), |i, _| {
-            let q = roads.pos[i];
-            (q.x - wp.x).hypot(q.y - wp.y)
-        });
+        let end = if flat_end {
+            roads.nearest(Vec3::new(to.x, to.y, from.z), |i, _| {
+                let q = roads.pos[i];
+                (q.x - to.x).hypot(q.y - to.y)
+            })
+        } else {
+            roads.nearest(to, |_, d| d)
+        };
         let (Some(a), Some(b)) = (start, end) else {
-            n::clear_gps_custom_route();
-            self.route.clear();
-            crate::log(&format!("gps ({why}): no road within {NEAR} m of the {}", if start.is_none() { "player" } else { "waypoint" }));
-            return;
+            return Err(format!("no road within {NEAR} m of the {}", if start.is_none() { "start" } else { "destination" }));
         };
-        let Some(path) = roads.route(a, b) else {
-            n::clear_gps_custom_route();
-            self.route.clear();
-            crate::log(&format!("gps ({why}): no drivable route from road node {a} to {b}"));
+        let path = roads.route(a, b).ok_or_else(|| format!("no drivable route from road node {a} to {b}"))?;
+        Ok(path.iter().map(|&i| roads.pos[i]).collect())
+    }
+
+    /// A race's drivers' way to their next checkpoint (races.rs).
+    pub fn road_path(&mut self, from: Vec3, heading: f32, to: Vec3) -> Result<Vec<Vec3>, String> {
+        self.load();
+        self.path(from, heading, to, false)
+    }
+
+    /// The height of the road nearest `p` within `reach` m (flat), heights
+    /// counting double: a race point clicked on a footbridge goes down to
+    /// the road under it (races.rs).
+    pub fn road_height(&mut self, p: Vec3, reach: f32) -> Option<f32> {
+        self.load();
+        let roads = self.roads.as_ref()?;
+        let i = roads.nearest(p, |i, d| if roads.out[i].is_empty() { d + WRONG_WAY } else { d })?;
+        let q = roads.pos[i];
+        ((q.x - p.x).hypot(q.y - p.y) <= reach).then_some(q.z)
+    }
+
+    fn find(&mut self, player: Vec3, heading: f32, wp: Vec3, why: &str) {
+        if self.roads.is_none() {
             return;
+        }
+        // A race checkpoint has a real height; the waypoint doesn't.
+        let pts = match self.path(player, heading, wp, self.target.is_none()) {
+            Ok(pts) => pts,
+            Err(e) => {
+                n::clear_gps_custom_route();
+                self.route.clear();
+                crate::log(&format!("gps ({why}): {e}"));
+                return;
+            }
         };
-        let pts: Vec<Vec3> = path.iter().map(|&i| roads.pos[i]).collect();
         let length: f32 = pts.windows(2).map(|w| dist(w[0], w[1])).sum();
         self.route = simplify(&pts);
         n::gps_custom_route(ROUTE_COLOUR, &self.route, RADAR_WIDTH, MAP_WIDTH);
-        crate::log(&format!("gps ({why}): route to ({:.0}, {:.0}), {length:.0} m over {} road nodes, drawn with {} points", wp.x, wp.y, path.len(), self.route.len()));
+        crate::log(&format!(
+            "gps ({why}): route to ({:.0}, {:.0}), {length:.0} m over {} road nodes, drawn with {} points{}",
+            wp.x,
+            wp.y,
+            pts.len(),
+            self.route.len(),
+            if n::is_pause_menu_active() { " (pause menu open)" } else { "" }
+        ));
     }
 }
 

@@ -194,7 +194,7 @@ const STEPS: &[Step] = &[
     Step {
         name: "install",
         title: "Installing into GTA V",
-        inputs: &["tools/paradise.ini", "tools/edits/spawn_blocks.json", "tools/base_map_disable.txt", "tools/base_map_packs.txt"],
+        inputs: &["tools/paradise.ini", "tools/edits/spawn_blocks.json", "tools/edits/races.json", "tools/base_map_disable.txt", "tools/base_map_packs.txt"],
         deps: &["pack", "water", "paths", "shops", "cars", "navmesh", "minimap", "handling"],
         outputs: &[],
         extra: installed,
@@ -800,6 +800,7 @@ fn install(c: &Ctx) -> Result<()> {
         ("out/cars/paradise_cars.txt", "paradise_cars.txt"),
         ("out/gta_paths_xml/paradise_roads.txt", "paradise_roads.txt"),
         ("tools/edits/spawn_blocks.json", "paradise_spawn_blocks.json"),
+        ("tools/edits/races.json", "paradise_races.json"),
     ];
     for (from, to) in map_files {
         if map == Map::Paradise && c.path(from).is_file() {

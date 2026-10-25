@@ -85,4 +85,6 @@ cp out/gta_col_xml/paradise_col.bin "$GTA/paradise_col.bin"
 [ -f out/gta_paths_xml/paradise_roads.txt ] && cp out/gta_paths_xml/paradise_roads.txt "$GTA/paradise_roads.txt"
 # No-spawn zones placed in the viewer's Spawns panel.
 [ -f tools/edits/spawn_blocks.json ] && cp tools/edits/spawn_blocks.json "$GTA/paradise_spawn_blocks.json"
+# Races placed in the viewer's Races panel.
+[ -f tools/edits/races.json ] && cp tools/edits/races.json "$GTA/paradise_races.json"
 echo "installed: $GTA/mods/update/x64/dlcpacks/bpparadise/dlc.rpf, water.xml, paradise.asi, paradise.ini, paradise_col.bin"

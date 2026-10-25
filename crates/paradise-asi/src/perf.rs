@@ -6,7 +6,7 @@ use std::time::Instant;
 
 const REPORT_MS: i32 = 15_000;
 
-pub const PARTS: [&str; 10] = ["spawn guard", "prop sweep", "prop shield", "wreck", "boost", "physics", "police", "junctions", "no missions", "shops"];
+pub const PARTS: [&str; 11] = ["spawn guard", "prop sweep", "prop shield", "wreck", "boost", "physics", "police", "junctions", "no missions", "shops", "races"];
 
 pub struct Perf {
     total: [f64; PARTS.len()],

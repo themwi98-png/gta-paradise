@@ -324,6 +324,18 @@ pub fn closest_vehicle_node(p: Vec3) -> Option<(Vec3, f32)> {
     ok.then_some((out, heading))
 }
 
+/// GET_NTH_CLOSEST_VEHICLE_NODE_WITH_HEADING (`nth` from 1 = the nearest).
+pub fn nth_closest_vehicle_node(p: Vec3, nth: i32) -> Option<(Vec3, f32)> {
+    let mut out = Vec3::default();
+    let mut heading = 0f32;
+    let mut lanes = 0i32;
+    let ok = ret_bool(call(
+        0x80CA6A8B6C094CC4,
+        args!(p.x, p.y, p.z, nth, &mut out as *mut Vec3, &mut heading as *mut f32, &mut lanes as *mut i32, 1, 3.0f32, 0.0f32),
+    ));
+    ok.then_some((out, heading))
+}
+
 /// GET_SAFE_COORD_FOR_PED: a spot on the pedestrian navmesh near `p`.
 pub fn safe_coord_for_ped(p: Vec3) -> Option<Vec3> {
     let mut out = Vec3::default();
@@ -996,6 +1008,15 @@ pub fn clear_player_wanted_level(player: i32) {
     call(0xB302540597885499, args!(player));
 }
 
+pub fn get_max_wanted_level() -> i32 {
+    ret_i32(call(0x462E0DB9B137DC5F, &[]))
+}
+
+/// SET_MAX_WANTED_LEVEL: 0 = the player can't be wanted at all.
+pub fn set_max_wanted_level(level: i32) {
+    call(0xAA5F02DB48D704B9, args!(level));
+}
+
 // ---- Junctions ----
 
 /// BRING_VEHICLE_TO_HALT: the vehicle brakes to a stop within `distance` m
@@ -1491,4 +1512,93 @@ pub fn display_radar(on: bool) {
 
 pub fn destroy_all_cams() {
     call(0x8E5FB15663F79120, args!(false));
+}
+
+// ---- Races ----
+
+/// CREATE_PED_INSIDE_VEHICLE (seat -1: the driver).
+pub fn create_ped_inside_vehicle(vehicle: i32, ped_type: i32, model: u32, seat: i32) -> i32 {
+    ret_i32(call(0x7DD959874C1FD534, args!(vehicle, ped_type, model, seat, false, false)))
+}
+
+pub fn set_blocking_of_non_temporary_events(ped: i32, on: bool) {
+    call(0x9F8AA94D6D97DBF4, args!(ped, on));
+}
+
+/// SET_PED_COMBAT_ATTRIBUTES (3 = can leave its vehicle).
+pub fn set_ped_combat_attributes(ped: i32, attribute: i32, on: bool) {
+    call(0x9F7794730795E019, args!(ped, attribute, on));
+}
+
+pub fn set_ped_can_be_dragged_out(ped: i32, on: bool) {
+    call(0xC1670E958EEE24E5, args!(ped, on));
+}
+
+pub fn set_ped_stay_in_vehicle_when_jacked(ped: i32, on: bool) {
+    call(0xEDF4079F9D54C9A1, args!(ped, on));
+}
+
+pub fn set_ped_get_out_upside_down_vehicle(ped: i32, on: bool) {
+    call(0xBC0ED94165A48BC2, args!(ped, on));
+}
+
+/// GET_IS_TASK_ACTIVE (2 = TASK_EXIT_VEHICLE).
+pub fn get_is_task_active(ped: i32, task: i32) -> bool {
+    ret_bool(call(0xB0760331C7AA4155, args!(ped, task)))
+}
+
+pub fn set_ped_keep_task(ped: i32, on: bool) {
+    call(0x971D38760FBC02EF, args!(ped, on));
+}
+
+/// CREATE_CHECKPOINT: `kind` as in the native's list (0: cylinder with an
+/// arrow pointing at `next`, 4: chequered flag); the game draws it until
+/// it's deleted.
+pub fn create_checkpoint(kind: i32, p: Vec3, next: Vec3, diameter: f32, rgba: [i32; 4]) -> i32 {
+    ret_i32(call(0x0134F0835AB6BFCB, args!(kind, p.x, p.y, p.z, next.x, next.y, next.z, diameter, rgba[0], rgba[1], rgba[2], rgba[3], 0)))
+}
+
+pub fn delete_checkpoint(checkpoint: i32) {
+    call(0xF5ED37F54CD4D52E, args!(checkpoint));
+}
+
+pub fn set_blip_colour(blip: i32, colour: i32) {
+    call(0x03D7FB09E75D6B7E, args!(blip, colour));
+}
+
+/// A blip that follows an entity around the map.
+pub fn add_blip_for_entity(entity: i32) -> i32 {
+    ret_i32(call(0x5CDE92C702A8FCE7, args!(entity)))
+}
+
+/// The cone showing which way a blip's entity faces (GTA Online's players).
+pub fn show_heading_indicator_on_blip(blip: i32, on: bool) {
+    call(0x5FBCA48327B914DF, args!(blip, on));
+}
+
+pub fn show_number_on_blip(blip: i32, number: i32) {
+    call(0xA3C0B359DCB848B6, args!(blip, number));
+}
+
+pub fn set_blip_scale(blip: i32, scale: f32) {
+    call(0xD38744167B2FA257, args!(blip, scale));
+}
+
+/// GET_RANDOM_INT_IN_RANGE: lo..hi (hi not included).
+pub fn random_int(lo: i32, hi: i32) -> i32 {
+    ret_i32(call(0xD53343AA4FB7DD28, args!(lo, hi)))
+}
+
+pub fn get_hud_colour(index: i32) -> [i32; 4] {
+    let (mut r, mut g, mut b, mut a) = (0i32, 0i32, 0i32, 0i32);
+    call(0x7C9C91AB74A0360F, args!(index, &mut r as *mut i32, &mut g as *mut i32, &mut b as *mut i32, &mut a as *mut i32));
+    [r, g, b, a]
+}
+
+pub fn replace_hud_colour(index: i32, rgba: [i32; 4]) {
+    call(0xF314CF4F0211894E, args!(index, rgba[0], rgba[1], rgba[2], rgba[3]));
+}
+
+pub fn is_pause_menu_active() -> bool {
+    ret_bool(call(0xB0034A223497FFCB, &[]))
 }

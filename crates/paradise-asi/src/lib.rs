@@ -78,6 +78,8 @@ mod natives;
 mod overlay;
 mod physics;
 mod propshield;
+mod races;
+mod rival;
 mod shops;
 mod spawnguard;
 mod switch;
@@ -174,6 +176,10 @@ struct Settings {
     /// Burnout's junkyards, auto repairs and gas stations.
     shops: bool,
     switch: bool,
+    /// Races (races.rs): rivals, and the hold to start one.
+    race: races::RaceSettings,
+    /// Amount of traffic during a race, times normal.
+    race_traffic: f32,
     /// Write the position probe and driving trace (debugging).
     debug_log: bool,
     /// Write the plugin's frame cost to paradise.log every 15 s.
@@ -182,7 +188,7 @@ struct Settings {
 
 fn load_settings() -> Settings {
     let text = std::fs::read_to_string("paradise.ini").unwrap_or_default();
-    let mut s = Settings { paradise: true, start: None, start_car: None, wreck: Default::default(), boost: Default::default(), air_gravity: 3.0, downforce: 0.75, drift: Default::default(), air: Default::default(), car_top: physics::BAKED_TOP, car_power: physics::BAKED_POWER, traffic: 1.0, police: Default::default(), takedown: Default::default(), grind: Default::default(), junctions: Default::default(), gta_missions: false, shops: true, switch: true, debug_log: false, perf: true };
+    let mut s = Settings { paradise: true, start: None, start_car: None, wreck: Default::default(), boost: Default::default(), air_gravity: 3.0, downforce: 0.75, drift: Default::default(), air: Default::default(), car_top: physics::BAKED_TOP, car_power: physics::BAKED_POWER, traffic: 1.0, police: Default::default(), takedown: Default::default(), grind: Default::default(), junctions: Default::default(), gta_missions: false, shops: true, switch: true, race: Default::default(), race_traffic: 0.25, debug_log: false, perf: true };
     for line in text.lines() {
         let p: Vec<&str> = line.split_whitespace().collect();
         let on = |v: &str| !(v.eq_ignore_ascii_case("off") || v == "0" || v.eq_ignore_ascii_case("false"));
@@ -229,6 +235,10 @@ fn load_settings() -> Settings {
             ["@gta_missions", v, ..] => s.gta_missions = on(v),
             ["@shops", v, ..] => s.shops = on(v),
             ["@switch", v, ..] => s.switch = on(v),
+            ["@race_opponents", v, ..] => s.race.opponents = num(v, 3.0).clamp(0.0, 8.0) as usize,
+            ["@race_hold", v, ..] => s.race.hold_ms = (num(v, 2.5).clamp(0.2, 10.0) * 1000.0) as i32,
+            ["@race_rival_speed", v, ..] => s.race.rival_speed = num(v, s.race.rival_speed).clamp(0.5, 2.0),
+            ["@race_traffic", v, ..] => s.race_traffic = num(v, s.race_traffic).clamp(0.0, 3.0),
             ["@perf", v, ..] => s.perf = on(v),
             ["@air_control", v, ..] => s.air.control = num(v, s.air.control).clamp(0.0, 1.0),
             ["@barrel_roll", v, ..] => s.air.barrel_roll = on(v),
@@ -682,6 +692,10 @@ extern "C" fn script_main() {
     let mut shops_on = settings.shops;
     let mut switcher = settings.paradise.then(switch::Switch::default);
     let mut switch_on = settings.switch;
+    let mut races = settings.paradise.then(races::Races::default);
+    let mut race_settings = settings.race;
+    let mut race_traffic = settings.race_traffic;
+    let mut race_traffic_on = false;
     let mut wallpass = settings.paradise.then(wallpass::WallPass::default);
 
     loop {
@@ -783,10 +797,19 @@ extern "C" fn script_main() {
             gta_missions = s.gta_missions;
             shops_on = s.shops;
             switch_on = s.switch;
+            race_settings = s.race;
+            race_traffic = s.race_traffic;
         }
-        if traffic != 1.0 {
-            n::set_vehicle_density_multiplier_this_frame(traffic);
-            n::set_random_vehicle_density_multiplier_this_frame(traffic);
+        // During a race, `@race_traffic` instead of `@traffic`.
+        let in_race = races.as_ref().is_some_and(|r| r.in_race());
+        if in_race != race_traffic_on {
+            race_traffic_on = in_race;
+            log(&if in_race { format!("races: traffic {race_traffic} times normal during the race") } else { format!("races: traffic back to {traffic} times normal") });
+        }
+        let density = if in_race { race_traffic } else { traffic };
+        if density != 1.0 {
+            n::set_vehicle_density_multiplier_this_frame(density);
+            n::set_random_vehicle_density_multiplier_this_frame(density);
         }
         if state.held.is_none() {
             let driving = if n::is_ped_in_any_vehicle(ped) { n::get_vehicle_ped_is_in(ped) } else { 0 };
@@ -803,12 +826,18 @@ extern "C" fn script_main() {
             }
             perf.start();
             if let (Some(m), false) = (no_missions.as_mut(), gta_missions) {
-                m.update(shops.as_ref().map_or(&[][..], |s| s.blips()), now);
+                let keep: Vec<i32> = shops.as_ref().map_or(&[][..], |s| s.blips()).iter().copied().chain(races.as_ref().map(|r| r.blips()).unwrap_or_default()).collect();
+                m.update(&keep, now);
             }
             perf.done(8);
             if let Some(s) = shops.as_mut() {
                 s.update(shops_on, ped, driven, &mut boost, now);
             }
+            perf.done(9);
+            if let Some(r) = races.as_mut() {
+                r.update(&race_settings, &boost_settings, &mut shield, ped, driven, &mut gps, now);
+            }
+            perf.done(10);
             if let Some(sw) = switcher.as_mut() {
                 sw.update(switch_on, &mut gps, now);
             }
@@ -820,7 +849,7 @@ extern "C" fn script_main() {
             // repair's physics reset is being undone, or a character switch
             // is changing the player's ped and car: no crashes, boost or
             // police driving on it meanwhile.
-            if shops.as_ref().is_some_and(|s| s.busy() || s.holding()) || switcher.as_ref().is_some_and(|s| s.busy()) {
+            if shops.as_ref().is_some_and(|s| s.busy() || s.holding()) || switcher.as_ref().is_some_and(|s| s.busy()) || races.as_ref().is_some_and(|r| r.holding()) {
                 crash.reset();
             } else {
                 perf.start();
@@ -828,7 +857,10 @@ extern "C" fn script_main() {
                 perf.done(1);
                 shield.update(driven);
                 perf.done(2);
-                let mut ctx = takedowns.update(&takedown_settings, ped, driven, now, &mut boost, &|v| chase.ramming(v));
+                // No takedowns during a race (races.rs).
+                let racing = races.as_ref().is_some_and(|r| r.in_race());
+                let td = if racing { takedown::TakedownSettings { enabled: false, ..takedown_settings } } else { takedown_settings };
+                let mut ctx = takedowns.update(&td, ped, driven, now, &mut boost, &|v| chase.ramming(v));
                 ctx.grinding = grind.update(&grind_settings, driven, shield.shielding(), ctx.attacking, now);
                 let event = crash.update(&wreck_settings, ped, now, &mut shield, &ctx);
                 if matches!(event, wreck::Event::Wrecked { .. } | wreck::Event::Finished(_)) {

@@ -33,6 +33,9 @@
 //! and benches, by model: GTA doesn't tell scripts an object's mass) are
 //! thrown well clear: hard to the side, or high over the car and off to one
 //! side, so they don't land back in its path.
+//!
+//! Race rivals (races.rs) get all of this too, each with its own
+//! `CarShield`, so a race is an even match (not the camera part).
 
 use crate::natives as n;
 use crate::shv::Vec3;
@@ -50,21 +53,30 @@ const HIT: f32 = 5.0;
 pub struct PropShield {
     /// Position and model hash of each prop.
     cells: HashMap<(i32, i32), Vec<([f32; 3], u32)>>,
-    /// The vehicle currently shielded.
-    shielded: i32,
-    /// Its engine, body and fuel tank health when the shield went up.
-    guard: [f32; 3],
     /// Objects thrown recently, and when.
     thrown: HashMap<i32, i32>,
-    /// Loose objects (thrown props, broken pieces) near the car this frame:
-    /// position and model.
-    loose: Vec<([f32; 3], u32)>,
     /// Models of the heavy props, which get the strong sweep.
     heavy: std::collections::HashSet<u32>,
     /// Models of all the props.
     models: std::collections::HashSet<u32>,
     /// Props knocked loose (hit or thrown): they no longer stand.
     loose_props: std::collections::HashSet<i32>,
+    /// The player's car.
+    player: CarShield,
+    /// The game's objects, read once a frame (game ms they were read at).
+    objects: (i32, Vec<i32>),
+}
+
+/// One car's shield and sweep: the player's, or a race rival's.
+#[derive(Default)]
+pub struct CarShield {
+    /// The vehicle currently shielded.
+    shielded: i32,
+    /// Its engine, body and fuel tank health when the shield went up.
+    guard: [f32; 3],
+    /// Loose objects (thrown props, broken pieces) near the car this frame:
+    /// position and model.
+    loose: Vec<([f32; 3], u32)>,
     /// Props passing through the car until then (game ms).
     ghost: HashMap<i32, i32>,
     /// Props touching the car last frame.
@@ -143,27 +155,46 @@ impl PropShield {
     /// is about to be reached, where it was placed or (thrown, broken)
     /// wherever it is now. Call after `sweep`.
     pub fn update(&mut self, veh: i32) {
+        let mut c = std::mem::take(&mut self.player);
+        self.shield_car(&mut c, veh);
+        self.player = c;
+    }
+
+    /// Every frame, for a race rival's car (`c` its shield): the sweep and
+    /// the shield, as the player's car has them.
+    pub fn guard_rival(&mut self, c: &mut CarShield, veh: i32, now: i32) {
+        self.sweep_car(c, veh, now, false);
+        self.shield_car(c, veh);
+    }
+
+    /// A rival's shield off (race over).
+    pub fn drop_rival(c: &mut CarShield) {
+        c.release();
+        c.last = None;
+    }
+
+    fn shield_car(&self, c: &mut CarShield, veh: i32) {
         let want = veh != 0 && {
             let p = n::get_entity_coords(veh);
             let r = NEAR + n::get_entity_speed(veh) * LOOKAHEAD;
-            !self.loose.is_empty() || self.near(p, r).next().is_some()
+            !c.loose.is_empty() || self.near(p, r).next().is_some()
         };
         if want && vehicle_contact(veh) {
-            self.release();
+            c.release();
             return;
         }
-        if want && self.shielded != veh {
-            self.release();
+        if want && c.shielded != veh {
+            c.release();
             n::set_vehicle_strong(veh, true);
             n::set_vehicle_can_be_visibly_damaged(veh, false);
-            self.shielded = veh;
-            self.guard = [n::get_vehicle_engine_health(veh), n::get_vehicle_body_health(veh), n::get_vehicle_petrol_tank_health(veh)];
+            c.shielded = veh;
+            c.guard = [n::get_vehicle_engine_health(veh), n::get_vehicle_body_health(veh), n::get_vehicle_petrol_tank_health(veh)];
         } else if !want {
-            self.release();
+            c.release();
         }
-        if self.shielded != 0 {
-            let v = self.shielded;
-            let [engine, body, tank] = self.guard;
+        if c.shielded != 0 {
+            let v = c.shielded;
+            let [engine, body, tank] = c.guard;
             if n::get_vehicle_engine_health(v) < engine {
                 n::set_vehicle_engine_health(v, engine);
             }
@@ -179,22 +210,14 @@ impl PropShield {
         }
     }
 
-    /// Is the car protected from damage right now?
-    /// When the car last hit a prop (game ms; 0: never).
+    /// When the player's car last hit a prop (game ms; 0: never).
     pub fn last_hit(&self) -> i32 {
-        self.last_hit
+        self.player.last_hit
     }
 
+    /// Is the player's car protected from damage right now?
     pub fn shielding(&self) -> bool {
-        self.shielded != 0
-    }
-
-    fn release(&mut self) {
-        if self.shielded != 0 {
-            n::set_vehicle_strong(self.shielded, false);
-            n::set_vehicle_can_be_visibly_damaged(self.shielded, true);
-            self.shielded = 0;
-        }
+        self.player.shielded != 0
     }
 
     /// Was an impact on the side of the car facing `dir` (world x / y, unit)
@@ -205,7 +228,7 @@ impl PropShield {
         let dist = |q: &[f32; 3]| (q[0] - p.x).hypot(q[1] - p.y);
         let mut hit: Vec<([f32; 3], u32)> = self
             .near(p, HIT)
-            .chain(self.loose.iter().filter(|(q, _)| (q[0] - p.x).hypot(q[1] - p.y) <= HIT))
+            .chain(self.player.loose.iter().filter(|(q, _)| (q[0] - p.x).hypot(q[1] - p.y) <= HIT))
             .filter(|(q, _)| {
                 let (dx, dy) = (q[0] - p.x, q[1] - p.y);
                 let d = dx.hypot(dy).max(0.1);
@@ -218,38 +241,61 @@ impl PropShield {
     }
 }
 
-impl PropShield {
-    /// Every frame: notes loose objects near the car (for the shield), keeps
-    /// props from changing the car's motion, and throws loose objects about
-    /// to go under its nose.
-    pub fn sweep(&mut self, veh: i32, now: i32) {
-        self.thrown.retain(|_, t| now - *t < 600);
-        self.ghost.retain(|_, t| *t > now);
-        for &o in self.ghost.keys().chain(self.thrown.keys()) {
-            n::camera_ignore(o);
+impl CarShield {
+    fn release(&mut self) {
+        if self.shielded != 0 {
+            n::set_vehicle_strong(self.shielded, false);
+            n::set_vehicle_can_be_visibly_damaged(self.shielded, true);
+            self.shielded = 0;
         }
-        self.loose.clear();
+    }
+}
+
+impl PropShield {
+    /// Every frame: notes loose objects near the player's car (for the
+    /// shield), keeps props from changing its motion, and throws loose
+    /// objects about to go under its nose.
+    pub fn sweep(&mut self, veh: i32, now: i32) {
+        let mut c = std::mem::take(&mut self.player);
+        self.sweep_car(&mut c, veh, now, true);
+        self.player = c;
+    }
+
+    /// `sweep` for car `veh` with its shield `c`; `camera`: the player's
+    /// (the gameplay camera ignores props it hits).
+    fn sweep_car(&mut self, c: &mut CarShield, veh: i32, now: i32, camera: bool) {
+        self.thrown.retain(|_, t| now - *t < 600);
+        c.ghost.retain(|_, t| *t > now);
+        if camera {
+            for &o in c.ghost.keys().chain(self.thrown.keys()) {
+                n::camera_ignore(o);
+            }
+        }
+        c.loose.clear();
         if veh == 0 {
-            self.last = None;
-            self.touching.clear();
+            c.last = None;
+            c.touching.clear();
             return;
         }
         let reach = NEAR + n::get_entity_speed(veh) * LOOKAHEAD;
         let p = n::get_entity_coords(veh);
         let v = n::get_entity_velocity(veh);
         let frame = n::get_entity_matrix(veh);
-        let w = match self.last {
+        let w = match c.last {
             Some((was, _, _, f)) if was == veh => crate::air::world_spin(f, frame, n::get_frame_time()),
             _ => [0.0; 3],
         };
         // The car's motion before anything touched it this frame.
-        let before = self.last.filter(|l| l.0 == veh).map(|l| (l.1, l.2));
+        let before = c.last.filter(|l| l.0 == veh).map(|l| (l.1, l.2));
         let speed = v.x.hypot(v.y);
         let sweeping = speed >= SWEEP_SPEED;
         // Along the way the car moves (sliding sideways too).
         let (fx, fy) = (v.x / speed.max(1e-3), v.y / speed.max(1e-3));
         let sweep_to = SWEEP_TO + speed * SWEEP_TO_PER_SPEED;
-        let objects = crate::shv::all_objects();
+        if self.objects.0 != now || self.objects.1.is_empty() {
+            self.objects = (now, crate::shv::all_objects());
+        }
+        let objects = std::mem::take(&mut self.objects.1);
         let mut touching = std::collections::HashSet::new();
         let mut struck = false;
         for &o in &objects {
@@ -260,9 +306,9 @@ impl PropShield {
                 continue;
             }
             let model = n::get_entity_model(o);
-            self.loose.push(([q.x, q.y, q.z], model));
+            c.loose.push(([q.x, q.y, q.z], model));
             let is_prop = self.models.contains(&model) || self.loose_props.contains(&o);
-            if self.ghost.contains_key(&o) {
+            if c.ghost.contains_key(&o) {
                 n::set_entity_no_collision_entity(veh, o, true);
                 n::set_entity_no_collision_entity(o, veh, true);
             } else if is_prop
@@ -272,14 +318,14 @@ impl PropShield {
                 && (n::is_entity_touching_entity(veh, o) || (!self.loose_props.contains(&o) && d2 < 6.0 * 6.0 && n::get_entity_speed(o) > 2.0))
             {
                 touching.insert(o);
-                if !self.touching.contains(&o) {
+                if !c.touching.contains(&o) {
                     struck = true;
-                    self.last_hit = now;
+                    c.last_hit = now;
                     if !self.loose_props.contains(&o) {
                         // A standing prop hit: knocked over, through the car,
                         // thrown clear along the way the car was going.
                         self.loose_props.insert(o);
-                        self.ghost.insert(o, now + GHOST_MS);
+                        c.ghost.insert(o, now + GHOST_MS);
                         n::set_entity_no_collision_entity(veh, o, true);
                         n::set_entity_no_collision_entity(o, veh, true);
                         let bv = before.map_or(v, |b| b.0);
@@ -311,12 +357,13 @@ impl PropShield {
                 self.loose_props.insert(o);
             }
         }
-        self.touching = touching;
+        c.touching = touching;
         // Forget objects that are gone.
         if self.loose_props.len() > 64 {
             let alive: std::collections::HashSet<i32> = objects.iter().copied().collect();
             self.loose_props.retain(|o| alive.contains(o));
         }
+        self.objects.1 = objects;
         // A prop's touch never changes the car's motion (a vehicle's does).
         let (mut v, mut w) = (v, w);
         if struck && !touching_vehicle(veh) {
@@ -326,13 +373,13 @@ impl PropShield {
                 (v, w) = (bv, bw);
             }
         }
-        self.last = Some((veh, v, w, frame));
+        c.last = Some((veh, v, w, frame));
     }
 
     /// A prop the car just knocked over (it stood fixed until hit, so the
     /// sweep couldn't move it): thrown clear the same way.
     pub fn toss(&mut self, veh: i32, props: &[([f32; 3], u32)], v: Vec3, now: i32) {
-        self.last_hit = now;
+        self.player.last_hit = now;
         let p = n::get_entity_coords(veh);
         let (fx, fy) = {
             let l = v.x.hypot(v.y).max(1e-3);

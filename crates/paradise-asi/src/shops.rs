@@ -116,16 +116,17 @@ pub struct Shops {
 /// after one, its motion is put back whenever it has lost some.
 const REPAIR_HOLD_MS: i32 = 300;
 
-/// A vehicle the junkyard offers.
-struct Car {
+/// A vehicle the junkyard offers (and race rivals are picked from,
+/// races.rs).
+pub(crate) struct Car {
     model: String,
-    hash: u32,
-    class: i32,
+    pub(crate) hash: u32,
+    pub(crate) class: i32,
     /// Its name in the game ("Truffade Adder").
-    name: String,
+    pub(crate) name: String,
     /// Stock top speed (m/s), acceleration, braking and traction, as the
     /// game rates them (`STATS`).
-    perf: [f32; 4],
+    pub(crate) perf: [f32; 4],
     /// The same as stat bars, 0..1 against the rest of the list.
     bars: [f32; 4],
 }
@@ -150,7 +151,7 @@ const CLASS_ORDER: [i32; 18] = [7, 6, 5, 4, 3, 1, 0, 2, 9, 8, 22, 12, 10, 11, 17
 
 /// Every vehicle in paradise_cars.txt the game has, sorted by class order
 /// and then name.
-fn load_cars() -> Vec<Car> {
+pub(crate) fn load_cars() -> Vec<Car> {
     let text = std::fs::read_to_string(CARS_FILE).unwrap_or_default();
     let mut missing = 0;
     let mut cars: Vec<Car> = text
