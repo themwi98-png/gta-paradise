@@ -9,7 +9,7 @@ Burnout Paradise City in GTA V story mode: the whole of Paradise City, from
 **Burnout Paradise Remastered**, replaces Los Santos in **GTA V Legacy**. GTA's
 traffic, pedestrians and police live in it, with Burnout-style driving on top.
 
-- **True Open-World Paradise City:** custom collision meshes added for the vast majority of out-of-bounds surfaces. Still very rough, so expect collision glitches out of bounds, but there are far fewer areas to fall through the map. 
+- **True Open-World Paradise City:** custom collision meshes added for the vast majority of out-of-bounds surfaces. This has been substantially improved in the latest release, with a new collision generation algorithm that makes out-of-bounds collision significantly more accurate than before.
 - **Burnout crashes:** cars crumple and wreck in slow motion with a crash
   camera, then you respawn nearby in a fresh copy of your car. Smashed-up
   looks don't stop you, but a wrecked engine does.
@@ -20,22 +20,18 @@ traffic, pedestrians and police live in it, with Burnout-style driving on top.
 - **Retuned cars:** faster, harder braking, extra gravity for jumps, and
   downforce.
 - **Street props** (lamp posts, traffic lights, benches, barriers…) placed
-  where Burnout had them. Smashing through them is purely visual: they never
-  slow you down or knock you off line.
+  where Burnout had them.
 - **Traffic** that's busy downtown and quiet on country roads, following
   Burnout's own traffic data.
-- **Takedowns:** ram police (or any car) into a crash, Burnout style. Police
-  ram back, and five takedowns in one chase lose them.
-- **Police** that follow you around Paradise City, keep up at speed and know
-  where you are while they're close.
+- **Takedowns:** ram police (or any car, configurable) into a crash, Burnout style. Police
+  ram back, and five takedowns (placeholder, configurable) in one chase loses them.
+- **Police** that follow you around Paradise City and keep up at speed.
 - **Burnout's drive-thrus:** auto repairs, gas stations (fill the boost),
   paint shops, and junkyards with a menu to customise your car or swap it
   for any GTA road vehicle.
-- **Radar, pause map and GPS** showing Paradise City, and Burnout's traffic
-  lights cycling at its junctions.
+- **Radar, pause map and GPS** showing Paradise City.
 - **Grinding** along walls and cars at speed, with sparks.
-- **Distant mountains and low-detail city**, so the skyline shows from afar.
-- **Builds from Burnout with the OTN mod** installed as well as from stock.
+- **OTN Map Compatible** will import the altered map from the OTN mod if the mod is already installed in Burnout.
 
 The full list, with what's confirmed working, is in
 [docs/FEATURES.md](docs/FEATURES.md); what changed in each release is in
@@ -43,15 +39,9 @@ The full list, with what's confirmed working, is in
 
 ## Known issues
 
-- **Some tunnels are blocked or flooded.** Glitched collision blocks the way
-  through some tunnels, and one tunnel is flooded with water.
-- **District names on the map are still Los Santos's**, and some Los Santos
-  map blips can remain.
-- **Police can still get tripped up at junctions** at Paradise speeds,
-  though they catch up again.
-- **Out-of-bounds collision is rough.** Expect some glitches off the main
-  roads (see the first feature above).
-- **Various visual glitches:** some textures still don't render properly.
+- **District names on the map are still Los Santos's**
+- **Police still need tuning** 
+- **Shadows Flickering**
 
 ## No game files included
 
