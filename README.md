@@ -2,8 +2,10 @@
 
 [Download](../../releases) (detailed installation instructions below)
 
-## Video of new drifting and more:
-[![Watch the video](https://img.youtube.com/vi/uDZeJiHGrR0/maxresdefault.jpg)](https://www.youtube.com/watch?v=uDZeJiHGrR0)
+## Video Showcasing Out-of-Bounds Exploration 
+[![Watch the video](https://img.youtube.com/vi/XFsEHsAkfsQ/maxresdefault.jpg)](https://www.youtube.com/watch?v=XFsEHsAkfsQ)
+
+## [Video of new drifting](https://www.youtube.com/watch?v=uDZeJiHGrR0)
 
 Burnout Paradise City in GTA V story mode: the whole of Paradise City, from
 **Burnout Paradise Remastered**, replaces Los Santos in **GTA V Legacy**. GTA's
